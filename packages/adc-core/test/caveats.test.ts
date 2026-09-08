@@ -8,6 +8,7 @@ import {
   encodeBlock,
   generateKeypair,
   AdcError,
+  DEFAULT_CLOCK_SKEW_SECONDS,
 } from "../src/index.js";
 import { buildSignInput } from "../src/signing.js";
 import { sign } from "../src/crypto.js";
@@ -70,6 +71,24 @@ test("scope narrows across attenuation: a later, tighter scope caveat is enforce
   assert.equal(code(verify(wire, rootPublicKey, { resourceKind: "repo", resourceId: "1", relation: "write" })), "ADC_SCOPE");
 });
 
+test("scope: an earlier, tighter scope caveat still binds even when a later block adds a looser one of the same kind", () => {
+  // The harder direction: a regression that evaluated only the newest
+  // block's scope caveat per kind (discarding earlier same-kind caveats
+  // instead of ANDing every instance) would pass the test above but fail
+  // this one.
+  const { rootSecretKey, rootPublicKey } = freshRoot();
+  let token = mintRoot(rootSecretKey, { caveats: [{ kind: "scope", triples: [["repo", "*", "read"]] }] });
+  token = attenuate(token, {
+    caveats: [{ kind: "scope", triples: [["repo", "*", "read"], ["repo", "*", "write"]] }],
+  });
+  const wire = encodeToken(token);
+
+  assert.equal(verify(wire, rootPublicKey, { resourceKind: "repo", resourceId: "1", relation: "read" }).ok, true);
+  // block0's caveat never granted "write" — it must still be denied even
+  // though block1's (later, broader) caveat alone would have allowed it.
+  assert.equal(code(verify(wire, rootPublicKey, { resourceKind: "repo", resourceId: "1", relation: "write" })), "ADC_SCOPE");
+});
+
 // ---------------------------------------------------------------------
 // sinks
 // ---------------------------------------------------------------------
@@ -110,6 +129,18 @@ test("taint_max narrows across attenuation: the tightest ceiling in the chain wi
   assert.equal(code(verify(wire, rootPublicKey, { taintLevel: "DERIVED" })), "ADC_TAINT");
 });
 
+test("taint_max: an earlier, tighter ceiling still binds even when a later block adds a looser one", () => {
+  const { rootSecretKey, rootPublicKey } = freshRoot();
+  let token = mintRoot(rootSecretKey, { caveats: [{ kind: "taint_max", level: "TRUSTED" }] });
+  token = attenuate(token, { caveats: [{ kind: "taint_max", level: "RAW_UNTRUSTED" }] });
+  const wire = encodeToken(token);
+
+  assert.equal(verify(wire, rootPublicKey, { taintLevel: "TRUSTED" }).ok, true);
+  // block0's ceiling (TRUSTED) must still bind even though block1's
+  // (later, looser) ceiling alone would have permitted DERIVED.
+  assert.equal(code(verify(wire, rootPublicKey, { taintLevel: "DERIVED" })), "ADC_TAINT");
+});
+
 // ---------------------------------------------------------------------
 // expires
 // ---------------------------------------------------------------------
@@ -136,6 +167,23 @@ test("expires: boundary cases at exactly the expiry, just inside skew, and just 
   const pastSkew = verify(wire, rootPublicKey, { now: at + skew + 1 }, { clockSkewSeconds: skew });
   assert.equal(pastSkew.ok, false);
   assert.equal(code(pastSkew), "ADC_EXPIRED");
+});
+
+test("expires: the real DEFAULT_CLOCK_SKEW_SECONDS value governs the skew boundary when opts is omitted, not just an explicitly-passed override", () => {
+  const { rootSecretKey, rootPublicKey } = freshRoot();
+  const at = 1_000_000;
+  const token = mintRoot(rootSecretKey, { caveats: [{ kind: "expires", at }] });
+  const wire = encodeToken(token);
+
+  // opts is omitted entirely here (only 3 args) — this must fall back to
+  // the real DEFAULT_CLOCK_SKEW_SECONDS, not some other value.
+  const withinDefaultSkew = verify(wire, rootPublicKey, { now: at + DEFAULT_CLOCK_SKEW_SECONDS });
+  assert.equal(withinDefaultSkew.ok, true, "boundary: now == at + DEFAULT_CLOCK_SKEW_SECONDS should be permitted");
+  assert.equal((withinDefaultSkew as { usedClockSkew: boolean }).usedClockSkew, true);
+
+  const pastDefaultSkew = verify(wire, rootPublicKey, { now: at + DEFAULT_CLOCK_SKEW_SECONDS + 1 });
+  assert.equal(pastDefaultSkew.ok, false);
+  assert.equal(code(pastDefaultSkew), "ADC_EXPIRED");
 });
 
 test("expires: the minimum across blocks governs, not the newest block's value", () => {
@@ -272,6 +320,29 @@ test("mintRoot()/attenuate() reject structurally invalid caveats at construction
     mintRoot(rootSecretKey, { caveats: [{ kind: "expires", at: -1 }] });
     assert.fail("expected throw");
   } catch (err) {
+    assert.equal((err as AdcError).code, "ADC_MALFORMED");
+  }
+});
+
+test("mintRoot()/attenuate() reject -0 in expires.at/max_depth.depth with the documented AdcError, not an untyped RangeError", () => {
+  // Regression test: -0 satisfies a naive "non-negative integer" check
+  // (Number.isInteger(-0), Number.isSafeInteger(-0), and -0 >= 0 are all
+  // true in JS) but canonical.ts's stringify() explicitly rejects -0 in
+  // numeric fields. Before this was pinned in isNonNegativeSafeInteger,
+  // parseCaveat/validateCaveats let -0 through silently and mintRoot()/
+  // attenuate() instead threw a raw, unwrapped RangeError deep inside
+  // encodeBlock() — breaking the documented "malformed caveats always
+  // surface as AdcError('ADC_MALFORMED', ...)" contract.
+  const { rootSecretKey } = freshRoot();
+
+  assert.throws(() => mintRoot(rootSecretKey, { caveats: [{ kind: "expires", at: -0 }] }), AdcError);
+  assert.throws(() => mintRoot(rootSecretKey, { caveats: [{ kind: "max_depth", depth: -0 }] }), AdcError);
+
+  try {
+    mintRoot(rootSecretKey, { caveats: [{ kind: "max_depth", depth: -0 }] });
+    assert.fail("expected throw");
+  } catch (err) {
+    assert.ok(err instanceof AdcError, `expected AdcError, got ${(err as Error).constructor.name}`);
     assert.equal((err as AdcError).code, "ADC_MALFORMED");
   }
 });

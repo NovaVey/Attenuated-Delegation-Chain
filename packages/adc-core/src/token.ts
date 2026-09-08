@@ -305,10 +305,17 @@ export function verify(
 
   // Step 4 (revocation) lands in Phase 7; not implemented yet.
 
-  // Step 5: every caveat in every block must be satisfied. Parsing
-  // (closed-vocabulary membership + shape) happens here rather than
-  // during the signature-chain loop above so a signature failure is
-  // always reported before a caveat-format failure, per 1.6's ordering.
+  // Step 5: every caveat in every block must be satisfied. parseCaveat's
+  // deep validation (closed-vocabulary membership, per-kind shape) runs
+  // here, after the signature-chain loop above, so a signature failure is
+  // always reported before *that* validation's failures, per 1.6's
+  // ordering. This does NOT extend to decodeBlock's own minimal per-entry
+  // check (each `c` array entry must be an object with a string `kind` —
+  // see block.ts), which runs earlier, inside the signature-chain loop
+  // above, and so can preempt a signature failure for that block. Both
+  // outcomes deny (fail-closed either way; never a false grant), but the
+  // exact reason code isn't a strict precedence guarantee across every
+  // possible malformation, only across parseCaveat's own checks.
   const resolvedFacts = resolveFacts(facts);
   let usedClockSkew = false;
   for (const { blockIndex, caveat: rawCaveat } of rawCaveats) {

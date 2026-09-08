@@ -63,7 +63,15 @@ function isNonEmptyString(x: unknown): x is string {
 }
 
 function isNonNegativeSafeInteger(x: unknown): x is number {
-  return typeof x === "number" && Number.isInteger(x) && Number.isSafeInteger(x) && x >= 0;
+  // -0 satisfies every other clause here (Number.isInteger(-0),
+  // Number.isSafeInteger(-0), and -0 >= 0 are all true in JS) but
+  // canonical.ts's stringify() explicitly rejects -0 in numeric fields —
+  // reject it here too, at the point of validation, so mintRoot()/
+  // attenuate() surface the documented AdcError("ADC_MALFORMED", ...)
+  // instead of an untyped RangeError leaking out of encodeBlock() later.
+  return (
+    typeof x === "number" && Number.isInteger(x) && Number.isSafeInteger(x) && x >= 0 && !Object.is(x, -0)
+  );
 }
 
 // RFC 1123 hostname shape: dot-separated labels, letters/digits/hyphens,

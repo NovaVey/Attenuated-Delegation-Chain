@@ -196,6 +196,47 @@ has the regression tests, including one that constructs two sibling
 attenuations sharing the same `nk` (via the `nextKeypair` hook) so a
 splice can only be caught by `prevSignature`, not by the key chain.
 
+## Adversarial review (Phase 2)
+
+Same process, scoped to the new caveat vocabulary work: 4 dimensions
+(caveat semantics, closed-vocabulary/parsing, the token.ts integration,
+test coverage), every finding adversarially re-verified. 5 candidates, all
+5 confirmed real, all fixed:
+
+- `isNonNegativeSafeInteger` (used to validate `expires.at` and
+  `max_depth.depth`) accepted `-0` — every other clause of a naive
+  non-negative-integer check is true for `-0` in JS — while
+  `canonical.ts`'s `stringify()` explicitly rejects it. Since
+  `mintRoot()`/`attenuate()` validate caveats via `parseCaveat()` and then
+  call `encodeBlock()` with no surrounding `try`/`catch`, a caveat with
+  `at: -0` or `depth: -0` slipped past validation and instead threw a raw,
+  untyped `RangeError` from deep inside `canonicalEncode()` — breaking the
+  documented "malformed caveats always surface as
+  `AdcError('ADC_MALFORMED', …)`" contract. Fixed by rejecting `-0`
+  explicitly in the validator, at the point of validation, matching
+  `canonical.ts`'s own rule.
+- A doc comment overclaimed that caveat-format failures are always
+  reported *after* a signature failure. True for `parseCaveat()`'s deep
+  validation, but `decodeBlock()`'s own minimal per-entry shape check
+  (each `c` array entry must be an object with a string `kind`) runs
+  earlier, inside the signature-chain loop, and can preempt a signature
+  failure for that block. Both outcomes deny — no false grant either way
+  — but the comment now says so precisely instead of overclaiming.
+- The `scope`/`taint_max` "narrows across attenuation" tests only put the
+  *tighter* caveat in the *later* block — the trivial direction, since a
+  regression that evaluated only the newest block's caveat per kind
+  (instead of ANDing every instance across the chain) would still have
+  passed them. Added the harder-direction test for both: a tight caveat
+  in an *earlier* block still binds even when a looser one of the same
+  kind is added later.
+- `DEFAULT_CLOCK_SKEW_SECONDS`'s actual default value was never exercised
+  — every skew-boundary test passed `clockSkewSeconds` explicitly. Added a
+  test that omits `opts` and checks the boundary at exactly
+  `at + DEFAULT_CLOCK_SKEW_SECONDS`, importing the constant rather than
+  hardcoding it, so a change to the constant (or its wiring) is caught.
+
+`test/caveats.test.ts` has the regression tests for all four.
+
 ## Testing
 
 ```
