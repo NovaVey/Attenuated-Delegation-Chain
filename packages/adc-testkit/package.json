@@ -1,0 +1,24 @@
+{
+  "name": "@adc/testkit",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reference evaluator, generators, and differential fuzzer for @adc/core. Dev-only — not shipped, no runtime integration surface.",
+  "type": "module",
+  "scripts": {
+    "prebuild": "npm run build -w @adc/core --if-present",
+    "build": "tsc -p tsconfig.json",
+    "pretest": "npm run build",
+    "test": "node --test dist/test/*.test.js",
+    "pretypecheck": "npm run build -w @adc/core --if-present",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@adc/core": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "fast-check": "^3.23.0",
+    "typescript": "^5.6.0"
+  },
+  "license": "MIT"
+}
