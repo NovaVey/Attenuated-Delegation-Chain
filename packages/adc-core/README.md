@@ -4,13 +4,17 @@ Format, sign, attenuate, seal, verify for Attenuated Delegation Chain tokens.
 No integration dependencies — see [`docs/PLAN.md`](../../docs/PLAN.md) for the
 full design.
 
-**Phase 1 scope.** This package currently implements signature-chain
-integrity only: mint, attenuate, seal, and verify the signature chain and
-proof. It does **not** evaluate caveats, check revocation, or consult
-Relationship-Based-Authorization — those land in later phases. A `verify()`
-`Allow` from this package means *the chain is a validly signed,
-non-tampered, non-truncated attenuation of the given root key* — nothing
-about what it authorizes.
+**Scope so far (Phases 1-2).** Signature-chain integrity (mint, attenuate,
+seal, verify the chain and proof) plus the closed caveat vocabulary
+(`scope`, `sinks`, `taint_max`, `expires`, `max_depth`, `hosts`, `aud`) and
+its evaluation against caller-supplied facts. It does **not** check
+revocation or consult Relationship-Based-Authorization — those land in
+Phases 4 and 7. A `verify()` `Allow` means *the chain is a validly signed,
+non-tampered, non-truncated attenuation of the given root key, and every
+caveat in every block is satisfied by the supplied facts* — it says
+nothing about revocation, and nothing beyond what the caveats you actually
+minted encode (an unrestricted token, i.e. one with no caveats at all,
+still verifies).
 
 ## Format
 
@@ -61,29 +65,92 @@ import {
 // Minting (would normally happen in the mint service, with the root
 // secret key, after an RBA scope-bounding check — Phase 4).
 const root = generateKeypair();
-let token = mintRoot(root.secretKey);
+let token = mintRoot(root.secretKey, {
+  caveats: [
+    { kind: "scope", triples: [["repo", "*", "read"]] },
+    { kind: "expires", at: Math.floor(Date.now() / 1000) + 3600 },
+  ],
+});
 
-// Attenuating (offline — no network call, no root key needed).
-token = attenuate(token); // Phase 2 adds a `caveats` option here.
+// Attenuating narrows further (offline — no network call, no root key
+// needed). A holder can only add caveats, never remove one an earlier
+// hop added.
+token = attenuate(token, { caveats: [{ kind: "sinks", classes: ["net:email"] }] });
 
 // Sealing before handing to the least-trusted hop.
 const sealed = seal(token);
 
-// Verifying (offline — only the root public key is needed).
+// Verifying (offline — only the root public key is needed). `facts` are
+// what the caller — typically the broker — actually observed about the
+// action being authorized.
 const wire = encodeToken(sealed);
-const result = verify(wire, root.publicKey);
+const result = verify(wire, root.publicKey, {
+  resourceKind: "repo",
+  resourceId: "123",
+  relation: "read",
+  sink: "net:email",
+});
 if (result.ok) {
-  console.log("depth", result.depth);
+  console.log("depth", result.depth, "usedClockSkew", result.usedClockSkew);
 } else {
   console.log("denied:", result.code, result.reason);
 }
 ```
 
-`verify()` never throws on token input — every malformed, tampered, or
-hostile wire string resolves to `{ ok: false, code, reason }` with one of
-the reason codes in `REASON_CODES` (`AdcError`/thrown errors are reserved
-for programmer misuse of the minting API, e.g. calling `attenuate()` on a
-sealed token).
+`verify()` never throws on token input — every malformed, tampered,
+hostile, or caveat-violating wire string resolves to
+`{ ok: false, code, reason }` with one of the reason codes in
+`REASON_CODES` (`AdcError`/thrown errors are reserved for programmer
+misuse of the minting API, e.g. calling `attenuate()` on a sealed token,
+or passing a structurally invalid caveat to `mintRoot()`/`attenuate()`).
+
+## Caveats
+
+The seven kinds from docs/PLAN.md 1.5 — a **closed vocabulary**, not a
+logic language. `mintRoot()`/`attenuate()` accept a typed `Caveat` union
+(`{kind: "scope" | "sinks" | "taint_max" | "expires" | "max_depth" |
+"hosts" | "aud", ...}`) and validate it (structure, closed-vocabulary
+membership) before embedding it — a malformed caveat throws
+`AdcError("ADC_MALFORMED", …)` at mint/attenuate time rather than failing
+confusingly later at `verify()`.
+
+`verify()`'s facts argument (2nd positional param) supplies what the
+caller observed: `resourceKind`, `resourceId`, `relation` (for `scope`),
+`sink` (`sinks`), `host` (`hosts`), `taintLevel` (`taint_max`), `audience`
+(`aud`), and `now` (`expires` — defaults to the real wall clock if
+omitted, pass it explicitly for deterministic tests). **A caveat whose
+required fact wasn't supplied denies** rather than passing — there is no
+silent "not applicable" case.
+
+Every caveat in every block must independently be satisfied
+(`verify()`'s step 5); there's no special cross-block merging logic
+because a plain AND across every caveat instance already gives the right
+answer:
+
+- `expires`/`max_depth`: requiring `now <= at_i` (or `depth <= depth_i`)
+  for *every* instance `i` is exactly requiring it hold against the
+  **minimum** across all blocks — the "attenuation only narrows" property
+  falls out of the composition rule for free, not from special-cased
+  aggregation.
+- `scope`/`sinks`/`hosts`/`taint_max`/`aud`: each additional caveat of
+  that kind is one more constraint the fact must also satisfy, i.e. an
+  intersection of permitted sets (or ceilings, or required values) across
+  the chain.
+
+**An unrecognized caveat `kind` denies with `ADC_MALFORMED`, it is never
+silently skipped.** A verifier that ignored a caveat kind it didn't
+recognize would *widen* effective authority instead of narrowing it — the
+opposite of what a caveat is for. This is what makes the closed vocabulary
+enforceable rather than aspirational.
+
+`resourceKind`/`resourceId`/`relation` (scope) and sink classes (sinks)
+are validated for *shape* only (non-empty strings; sink classes as
+`namespace:action`), not against a hardcoded enum — those namespaces are
+owned by RBA and the broker respectively, sibling packages this package
+takes no dependency on (docs/PLAN.md section 2). `taint_max`'s three
+levels are the one closed enum defined here, since the ordering
+(`TRUSTED < DERIVED < RAW_UNTRUSTED`) is part of this spec, not an
+external system's.
 
 ## Security notes specific to this package
 
@@ -114,9 +181,9 @@ sealed token).
   failing much later and confusingly, far from the actual mistake, at
   `verify()`.
 
-## Adversarial review
+## Adversarial review (Phase 1)
 
-Before this phase was committed, an independent multi-pass review (wire
+Before Phase 1 was committed, an independent multi-pass review (wire
 format, `verify()` logic, the mint/attenuate/seal API surface, and test
 coverage, each finding then adversarially re-verified) found 8 real
 issues, all fixed here: the two hardening items above, `seal()` missing
@@ -128,6 +195,47 @@ binding docs/PLAN.md 1.3 calls non-negotiable. `test/hardening.test.ts`
 has the regression tests, including one that constructs two sibling
 attenuations sharing the same `nk` (via the `nextKeypair` hook) so a
 splice can only be caught by `prevSignature`, not by the key chain.
+
+## Adversarial review (Phase 2)
+
+Same process, scoped to the new caveat vocabulary work: 4 dimensions
+(caveat semantics, closed-vocabulary/parsing, the token.ts integration,
+test coverage), every finding adversarially re-verified. 5 candidates, all
+5 confirmed real, all fixed:
+
+- `isNonNegativeSafeInteger` (used to validate `expires.at` and
+  `max_depth.depth`) accepted `-0` — every other clause of a naive
+  non-negative-integer check is true for `-0` in JS — while
+  `canonical.ts`'s `stringify()` explicitly rejects it. Since
+  `mintRoot()`/`attenuate()` validate caveats via `parseCaveat()` and then
+  call `encodeBlock()` with no surrounding `try`/`catch`, a caveat with
+  `at: -0` or `depth: -0` slipped past validation and instead threw a raw,
+  untyped `RangeError` from deep inside `canonicalEncode()` — breaking the
+  documented "malformed caveats always surface as
+  `AdcError('ADC_MALFORMED', …)`" contract. Fixed by rejecting `-0`
+  explicitly in the validator, at the point of validation, matching
+  `canonical.ts`'s own rule.
+- A doc comment overclaimed that caveat-format failures are always
+  reported *after* a signature failure. True for `parseCaveat()`'s deep
+  validation, but `decodeBlock()`'s own minimal per-entry shape check
+  (each `c` array entry must be an object with a string `kind`) runs
+  earlier, inside the signature-chain loop, and can preempt a signature
+  failure for that block. Both outcomes deny — no false grant either way
+  — but the comment now says so precisely instead of overclaiming.
+- The `scope`/`taint_max` "narrows across attenuation" tests only put the
+  *tighter* caveat in the *later* block — the trivial direction, since a
+  regression that evaluated only the newest block's caveat per kind
+  (instead of ANDing every instance across the chain) would still have
+  passed them. Added the harder-direction test for both: a tight caveat
+  in an *earlier* block still binds even when a looser one of the same
+  kind is added later.
+- `DEFAULT_CLOCK_SKEW_SECONDS`'s actual default value was never exercised
+  — every skew-boundary test passed `clockSkewSeconds` explicitly. Added a
+  test that omits `opts` and checks the boundary at exactly
+  `at + DEFAULT_CLOCK_SKEW_SECONDS`, importing the constant rather than
+  hardcoding it, so a change to the constant (or its wiring) is caught.
+
+`test/caveats.test.ts` has the regression tests for all four.
 
 ## Testing
 
@@ -143,7 +251,9 @@ npm test        # node:test over dist/test/*.test.js
   helpers, the exact `toSign_i` layout, and block/wire encode-decode.
 - `test/property.test.ts` — `fast-check` properties: canonical-encoding
   determinism, honest chains always verifying, single-byte mutations
-  always denied, cross-root verification always failing.
+  always denied, cross-root verification always failing, and (Phase 2)
+  `expires`/`max_depth` agreeing with the minimum-across-blocks rule for
+  randomized values.
 - `test/golden-vectors.test.ts` + `test/fixtures/golden-vectors.json` —
   pins the wire format against tokens generated from fixed key material
   (`scripts/gen-golden-vectors.mjs`), so an accidental format change is
@@ -152,5 +262,12 @@ npm test        # node:test over dist/test/*.test.js
   corrupted byte strings that must be denied with a specific reason
   code) — the latter catch a regression that silently *widens*
   acceptance, which positive vectors alone cannot.
-- `test/hardening.test.ts` — regression tests for the adversarial-review
-  findings below.
+- `test/hardening.test.ts` — regression tests for the Phase 1
+  adversarial-review findings below.
+- `test/caveats.test.ts` — per-caveat unit tests including boundary cases
+  (expiry exactly at expiry/skew boundary, `max_depth` exactly at the
+  limit, `taint_max` exactly at the ceiling), the minimum-across-blocks
+  behavior for `expires`, closed-vocabulary rejection, and mint-time
+  validation. `test/property.test.ts` adds `fast-check` properties
+  confirming `expires`/`max_depth` agree with the minimum-across-blocks
+  rule for randomized values, not just the hand-picked cases.

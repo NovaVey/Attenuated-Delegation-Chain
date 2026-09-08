@@ -175,11 +175,11 @@ test("depth exceeding maxDepth is denied structurally", () => {
   for (let i = 0; i < 5; i++) token = attenuate(token);
   const wire = encodeToken(token); // depth 5
 
-  const result = verify(wire, rootPublicKey, { maxDepth: 4 });
+  const result = verify(wire, rootPublicKey, {}, { maxDepth: 4 });
   assert.equal(result.ok, false);
   assert.equal((result as { ok: false; code: string }).code, "ADC_DEPTH_EXCEEDED");
 
-  assert.equal(verify(wire, rootPublicKey, { maxDepth: 5 }).ok, true);
+  assert.equal(verify(wire, rootPublicKey, {}, { maxDepth: 5 }).ok, true);
 });
 
 test("malformed wire strings are denied, never thrown", () => {
