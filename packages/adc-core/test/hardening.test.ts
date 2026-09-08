@@ -93,8 +93,13 @@ test("prevSignature binding: splicing a grandchild across two same-nk siblings i
   const shared = attenuate(mintRoot(rootSecretKey)); // depth 1
 
   const kp = generateKeypair();
-  const siblingA = attenuate(shared, { nextKeypair: kp, caveats: [{ kind: "note", tag: 1 }] });
-  const siblingB = attenuate(shared, { nextKeypair: kp, caveats: [{ kind: "note", tag: 2 }] });
+  // max_depth is evaluated purely from the wire structure (ctx.depth), not
+  // from any fact — a large, harmless value here just needs to differ
+  // between the two siblings (so their block bytes and signatures differ)
+  // without pulling caveat-fact requirements into a test that isn't about
+  // caveats at all.
+  const siblingA = attenuate(shared, { nextKeypair: kp, caveats: [{ kind: "max_depth", depth: 100 }] });
+  const siblingB = attenuate(shared, { nextKeypair: kp, caveats: [{ kind: "max_depth", depth: 101 }] });
 
   // Sanity: identical verify key at this position (both use kp.publicKey
   // as their `nk`), but distinct block content and therefore distinct
@@ -179,7 +184,7 @@ test("maxDepth is enforced before decoding block/sig payloads (ADC_DEPTH_EXCEEDE
   segments.push("kAAAA");
   const wire = segments.join(".");
 
-  const result = verify(wire, rootPublicKey, { maxDepth: 2 });
+  const result = verify(wire, rootPublicKey, {}, { maxDepth: 2 });
   assert.equal(result.ok, false);
   assert.equal((result as { ok: false; code: string }).code, "ADC_DEPTH_EXCEEDED");
 });

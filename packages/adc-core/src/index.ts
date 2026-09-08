@@ -1,7 +1,7 @@
 /**
  * @adc/core — Attenuated Delegation Chain: format, sign, attenuate, seal,
- * verify. Phase 1 scope: no caveat evaluation, no revocation, no
- * integration with RBA/broker/Principal-Graph. See docs/PLAN.md.
+ * verify, and the closed caveat vocabulary. No revocation, no integration
+ * with RBA/broker/Principal-Graph yet. See docs/PLAN.md.
  */
 
 export {
@@ -32,3 +32,6 @@ export type { Keypair } from "./crypto.js";
 export type { RawCaveat, BlockFields } from "./block.js";
 export { AdcError, REASON_CODES } from "./errors.js";
 export type { ReasonCode } from "./errors.js";
+
+export { parseCaveat, evaluateCaveat, resolveFacts, caveatToRaw, TAINT_LEVELS } from "./caveats.js";
+export type { Caveat, CaveatKind, TaintLevel, Facts, ResolvedFacts, EvalContext, CaveatEvalResult } from "./caveats.js";
