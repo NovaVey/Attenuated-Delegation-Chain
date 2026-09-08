@@ -1,0 +1,19 @@
+{
+  "name": "attenuated-delegation-chain",
+  "private": true,
+  "description": "Delegation credentials for AI agents, biscuit-style: attenuable capability tokens that can only narrow at each hop.",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "services/*"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "license": "MIT"
+}

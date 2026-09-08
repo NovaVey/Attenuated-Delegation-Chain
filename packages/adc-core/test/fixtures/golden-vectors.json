@@ -1,0 +1,43 @@
+{
+  "formatVersion": "adc1",
+  "rootSecretKeyB64": "AQwXIi04Q05ZZG96hZCbprG8x9Ld6PP-CRQfKjVAS1Y",
+  "rootPublicKeyB64": "N8aTriMpMrDdWB4bKpP9NURrjkOKPvtHvWadkjZ6ciQ",
+  "nextSecretKeysB64": [
+    "JjE8R1JdaHN-iZSfqrXAy9bh7PcCDRgjLjlET1plcHs",
+    "S1ZhbHeCjZijrrnEz9rl8PsGERwnMj1IU15pdH-KlaA",
+    "cHuGkZynsr3I097p9P8KFSArNkFMV2JteIOOmaSvusU",
+    "laCrtsHM1-Lt-AMOGSQvOkVQW2ZxfIeSnaizvsnU3-o"
+  ],
+  "vectors": [
+    {
+      "description": "attenuable token at depth 0",
+      "depth": 0,
+      "proofType": "attenuable",
+      "wire": "adc1.eyJhbGciOiJlZDI1NTE5IiwiYyI6W10sIm5rIjoiTkRwQjc3RlZRdVBCaXdZWlViNV9PTDUtQ0NuR1VVaDhrT0taX1E5bk4zZyJ9.jFswIdiPVj4wzEttm9qwF1IvShHB4jxbkAnTMn4DKBm9RmmrGGjGCUGT3UEP0zPK-8VJ8gyBCqzUiqsVxPfBAg.kJjE8R1JdaHN-iZSfqrXAy9bh7PcCDRgjLjlET1plcHs"
+    },
+    {
+      "description": "attenuable token at depth 1",
+      "depth": 1,
+      "proofType": "attenuable",
+      "wire": "adc1.eyJhbGciOiJlZDI1NTE5IiwiYyI6W10sIm5rIjoiTkRwQjc3RlZRdVBCaXdZWlViNV9PTDUtQ0NuR1VVaDhrT0taX1E5bk4zZyJ9.jFswIdiPVj4wzEttm9qwF1IvShHB4jxbkAnTMn4DKBm9RmmrGGjGCUGT3UEP0zPK-8VJ8gyBCqzUiqsVxPfBAg.eyJhbGciOiJlZDI1NTE5IiwiYyI6W10sIm5rIjoiUUV6OW5PYnVLaF85cWdSY0c1MDlLUUhZWG1TZm9ab3Y2c0VSVmx2YUhNQSJ9.327P9cT_WE7hLaqd7D_nNLMY2d35TG7RmArBCD_Hnq8I5VU7yk8pV_IkbPqdI0G6PKc_pbFF1DuwD6FiLv1vBw.kS1ZhbHeCjZijrrnEz9rl8PsGERwnMj1IU15pdH-KlaA"
+    },
+    {
+      "description": "attenuable token at depth 2",
+      "depth": 2,
+      "proofType": "attenuable",
+      "wire": "adc1.eyJhbGciOiJlZDI1NTE5IiwiYyI6W10sIm5rIjoiTkRwQjc3RlZRdVBCaXdZWlViNV9PTDUtQ0NuR1VVaDhrT0taX1E5bk4zZyJ9.jFswIdiPVj4wzEttm9qwF1IvShHB4jxbkAnTMn4DKBm9RmmrGGjGCUGT3UEP0zPK-8VJ8gyBCqzUiqsVxPfBAg.eyJhbGciOiJlZDI1NTE5IiwiYyI6W10sIm5rIjoiUUV6OW5PYnVLaF85cWdSY0c1MDlLUUhZWG1TZm9ab3Y2c0VSVmx2YUhNQSJ9.327P9cT_WE7hLaqd7D_nNLMY2d35TG7RmArBCD_Hnq8I5VU7yk8pV_IkbPqdI0G6PKc_pbFF1DuwD6FiLv1vBw.eyJhbGciOiJlZDI1NTE5IiwiYyI6W10sIm5rIjoiRlBmRUplMDRLSTNpNE5jOTJhdEUxbk4zRFJydUhHa19yMnowZ0hTZnEtYyJ9.-sma5lEqaxtAIRh7xhFM38h16dBFftt_iBbHbj1JwcryMEcVwgve7mCJXoODzcLDeqw_u0uPKlZ7zm-FcWSMCg.kcHuGkZynsr3I097p9P8KFSArNkFMV2JteIOOmaSvusU"
+    },
+    {
+      "description": "sealed token at depth 2",
+      "depth": 2,
+      "proofType": "sealed",
+      "wire": "adc1.eyJhbGciOiJlZDI1NTE5IiwiYyI6W10sIm5rIjoiTkRwQjc3RlZRdVBCaXdZWlViNV9PTDUtQ0NuR1VVaDhrT0taX1E5bk4zZyJ9.jFswIdiPVj4wzEttm9qwF1IvShHB4jxbkAnTMn4DKBm9RmmrGGjGCUGT3UEP0zPK-8VJ8gyBCqzUiqsVxPfBAg.eyJhbGciOiJlZDI1NTE5IiwiYyI6W10sIm5rIjoiUUV6OW5PYnVLaF85cWdSY0c1MDlLUUhZWG1TZm9ab3Y2c0VSVmx2YUhNQSJ9.327P9cT_WE7hLaqd7D_nNLMY2d35TG7RmArBCD_Hnq8I5VU7yk8pV_IkbPqdI0G6PKc_pbFF1DuwD6FiLv1vBw.eyJhbGciOiJlZDI1NTE5IiwiYyI6W10sIm5rIjoiRlBmRUplMDRLSTNpNE5jOTJhdEUxbk4zRFJydUhHa19yMnowZ0hTZnEtYyJ9.-sma5lEqaxtAIRh7xhFM38h16dBFftt_iBbHbj1JwcryMEcVwgve7mCJXoODzcLDeqw_u0uPKlZ7zm-FcWSMCg.sd1ixdIyNPB3aZRczlSW8zsRF4_UhXcVQ_G5h25u91BF51Mh9eWeaGgDewwRF22EbzPAzKlUOKavi2TDvoG8nBA"
+    },
+    {
+      "description": "attenuable token at depth 3",
+      "depth": 3,
+      "proofType": "attenuable",
+      "wire": "adc1.eyJhbGciOiJlZDI1NTE5IiwiYyI6W10sIm5rIjoiTkRwQjc3RlZRdVBCaXdZWlViNV9PTDUtQ0NuR1VVaDhrT0taX1E5bk4zZyJ9.jFswIdiPVj4wzEttm9qwF1IvShHB4jxbkAnTMn4DKBm9RmmrGGjGCUGT3UEP0zPK-8VJ8gyBCqzUiqsVxPfBAg.eyJhbGciOiJlZDI1NTE5IiwiYyI6W10sIm5rIjoiUUV6OW5PYnVLaF85cWdSY0c1MDlLUUhZWG1TZm9ab3Y2c0VSVmx2YUhNQSJ9.327P9cT_WE7hLaqd7D_nNLMY2d35TG7RmArBCD_Hnq8I5VU7yk8pV_IkbPqdI0G6PKc_pbFF1DuwD6FiLv1vBw.eyJhbGciOiJlZDI1NTE5IiwiYyI6W10sIm5rIjoiRlBmRUplMDRLSTNpNE5jOTJhdEUxbk4zRFJydUhHa19yMnowZ0hTZnEtYyJ9.-sma5lEqaxtAIRh7xhFM38h16dBFftt_iBbHbj1JwcryMEcVwgve7mCJXoODzcLDeqw_u0uPKlZ7zm-FcWSMCg.eyJhbGciOiJlZDI1NTE5IiwiYyI6W10sIm5rIjoiazYzZXhxUC0wWWlsek1CdG1VUzBqYmN6c1JfZ2xnU0FMSDAxM1JkTDhGVSJ9.rY8yR1n_rXfEktbajkrkcpQdF4CvB-ueSZWSXdBnqn3g-XvdOUx9FfBazv4n5OTo4b21hBiFziMkUboRQywzCQ.klaCrtsHM1-Lt-AMOGSQvOkVQW2ZxfIeSnaizvsnU3-o"
+    }
+  ]
+}
