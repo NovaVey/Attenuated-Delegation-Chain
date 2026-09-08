@@ -22,6 +22,7 @@ const fixture = JSON.parse(readFileSync(fixturePath, "utf8")) as {
   rootPublicKeyB64: string;
   nextSecretKeysB64: string[];
   vectors: { description: string; depth: number; proofType: "attenuable" | "sealed"; wire: string }[];
+  negativeVectors: { description: string; wire: string; expectedCode: string }[];
 };
 
 function fromB64(s: string): Uint8Array {
@@ -36,6 +37,21 @@ function keypairFor(secretB64: string) {
 test("golden vectors: fixture is non-trivial", () => {
   assert.equal(fixture.formatVersion, "adc1");
   assert.ok(fixture.vectors.length >= 5);
+  assert.ok(fixture.negativeVectors.length >= 3);
+});
+
+test("golden vectors: every committed negative vector is denied with its pinned reason code", () => {
+  // Unlike roundtrip.test.ts's byte-flip fuzz loops (which mutate freshly
+  // generated tokens each run), these are specific, committed-to-the-repo
+  // corrupted byte strings — this catches a regression that silently
+  // widens acceptance of a known-bad token, not just "some mutation
+  // somewhere is denied".
+  const rootPublicKey = fromB64(fixture.rootPublicKeyB64);
+  for (const v of fixture.negativeVectors) {
+    const result = verify(v.wire, rootPublicKey);
+    assert.equal(result.ok, false, `${v.description} should be denied`);
+    assert.equal((result as { ok: false; code: string }).code, v.expectedCode, v.description);
+  }
 });
 
 test("golden vectors: every committed wire string verifies against the committed root public key", () => {

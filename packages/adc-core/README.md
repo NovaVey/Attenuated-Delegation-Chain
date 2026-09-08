@@ -100,6 +100,34 @@ sealed token).
   re-serialization of a parsed block. `decodeBlock()` is read-only; it is
   used to extract fields like `nk`, never to reconstruct the bytes that
   get signed or verified.
+- `verify()` checks the structural depth cap (`maxDepth`) before decoding
+  any individual block or signature payload — segment count (and
+  therefore depth) is derivable from the cheap `.`-split alone
+  (`wire.ts`'s `splitSegments`/`blockCountForSegments`), so an
+  over-deep token is denied without paying for a base64 decode of
+  every block/sig it carries.
+- `mintRoot()`/`attenuate()` validate the `nextKeypair` testing hook when
+  supplied: the secret must actually derive the given public key, and the
+  returned token never shares a live buffer with the caller's `Keypair`
+  object (the secret is copied). Without this, a caller who passed a
+  mismatched keypair would get a token back with no error at all, only
+  failing much later and confusingly, far from the actual mistake, at
+  `verify()`.
+
+## Adversarial review
+
+Before this phase was committed, an independent multi-pass review (wire
+format, `verify()` logic, the mint/attenuate/seal API surface, and test
+coverage, each finding then adversarially re-verified) found 8 real
+issues, all fixed here: the two hardening items above, `seal()` missing
+the same blocks/sigs consistency check `attenuate()` has, and — the most
+interesting one — that the original "swap a block between two tokens
+sharing a prefix" tests passed for the *wrong* reason (an ordinary
+next-key mismatch) rather than actually isolating the `prevSignature`
+binding docs/PLAN.md 1.3 calls non-negotiable. `test/hardening.test.ts`
+has the regression tests, including one that constructs two sibling
+attenuations sharing the same `nk` (via the `nextKeypair` hook) so a
+splice can only be caught by `prevSignature`, not by the key chain.
 
 ## Testing
 
@@ -119,4 +147,10 @@ npm test        # node:test over dist/test/*.test.js
 - `test/golden-vectors.test.ts` + `test/fixtures/golden-vectors.json` —
   pins the wire format against tokens generated from fixed key material
   (`scripts/gen-golden-vectors.mjs`), so an accidental format change is
-  caught here before anything else depends on it.
+  caught here before anything else depends on it. Includes both positive
+  vectors (must verify) and negative vectors (specific, committed
+  corrupted byte strings that must be denied with a specific reason
+  code) — the latter catch a regression that silently *widens*
+  acceptance, which positive vectors alone cannot.
+- `test/hardening.test.ts` — regression tests for the adversarial-review
+  findings below.

@@ -39,5 +39,22 @@
       "proofType": "attenuable",
       "wire": "adc1.eyJhbGciOiJlZDI1NTE5IiwiYyI6W10sIm5rIjoiTkRwQjc3RlZRdVBCaXdZWlViNV9PTDUtQ0NuR1VVaDhrT0taX1E5bk4zZyJ9.jFswIdiPVj4wzEttm9qwF1IvShHB4jxbkAnTMn4DKBm9RmmrGGjGCUGT3UEP0zPK-8VJ8gyBCqzUiqsVxPfBAg.eyJhbGciOiJlZDI1NTE5IiwiYyI6W10sIm5rIjoiUUV6OW5PYnVLaF85cWdSY0c1MDlLUUhZWG1TZm9ab3Y2c0VSVmx2YUhNQSJ9.327P9cT_WE7hLaqd7D_nNLMY2d35TG7RmArBCD_Hnq8I5VU7yk8pV_IkbPqdI0G6PKc_pbFF1DuwD6FiLv1vBw.eyJhbGciOiJlZDI1NTE5IiwiYyI6W10sIm5rIjoiRlBmRUplMDRLSTNpNE5jOTJhdEUxbk4zRFJydUhHa19yMnowZ0hTZnEtYyJ9.-sma5lEqaxtAIRh7xhFM38h16dBFftt_iBbHbj1JwcryMEcVwgve7mCJXoODzcLDeqw_u0uPKlZ7zm-FcWSMCg.eyJhbGciOiJlZDI1NTE5IiwiYyI6W10sIm5rIjoiazYzZXhxUC0wWWlsek1CdG1VUzBqYmN6c1JfZ2xnU0FMSDAxM1JkTDhGVSJ9.rY8yR1n_rXfEktbajkrkcpQdF4CvB-ueSZWSXdBnqn3g-XvdOUx9FfBazv4n5OTo4b21hBiFziMkUboRQywzCQ.klaCrtsHM1-Lt-AMOGSQvOkVQW2ZxfIeSnaizvsnU3-o"
     }
+  ],
+  "negativeVectors": [
+    {
+      "description": "depth-0 vector with block0's signature corrupted",
+      "wire": "adc1.eyJhbGciOiJlZDI1NTE5IiwiYyI6W10sIm5rIjoiTkRwQjc3RlZRdVBCaXdZWlViNV9PTDUtQ0NuR1VVaDhrT0taX1E5bk4zZyJ9.c1swIdiPVj4wzEttm9qwF1IvShHB4jxbkAnTMn4DKBm9RmmrGGjGCUGT3UEP0zPK-8VJ8gyBCqzUiqsVxPfBAg.kJjE8R1JdaHN-iZSfqrXAy9bh7PcCDRgjLjlET1plcHs",
+      "expectedCode": "ADC_SIG_INVALID"
+    },
+    {
+      "description": "depth-0 vector with the proof segment truncated off",
+      "wire": "adc1.eyJhbGciOiJlZDI1NTE5IiwiYyI6W10sIm5rIjoiTkRwQjc3RlZRdVBCaXdZWlViNV9PTDUtQ0NuR1VVaDhrT0taX1E5bk4zZyJ9.jFswIdiPVj4wzEttm9qwF1IvShHB4jxbkAnTMn4DKBm9RmmrGGjGCUGT3UEP0zPK-8VJ8gyBCqzUiqsVxPfBAg",
+      "expectedCode": "ADC_MALFORMED"
+    },
+    {
+      "description": "sealed depth-2 vector with the sealing signature corrupted",
+      "wire": "adc1.eyJhbGciOiJlZDI1NTE5IiwiYyI6W10sIm5rIjoiTkRwQjc3RlZRdVBCaXdZWlViNV9PTDUtQ0NuR1VVaDhrT0taX1E5bk4zZyJ9.jFswIdiPVj4wzEttm9qwF1IvShHB4jxbkAnTMn4DKBm9RmmrGGjGCUGT3UEP0zPK-8VJ8gyBCqzUiqsVxPfBAg.eyJhbGciOiJlZDI1NTE5IiwiYyI6W10sIm5rIjoiUUV6OW5PYnVLaF85cWdSY0c1MDlLUUhZWG1TZm9ab3Y2c0VSVmx2YUhNQSJ9.327P9cT_WE7hLaqd7D_nNLMY2d35TG7RmArBCD_Hnq8I5VU7yk8pV_IkbPqdI0G6PKc_pbFF1DuwD6FiLv1vBw.eyJhbGciOiJlZDI1NTE5IiwiYyI6W10sIm5rIjoiRlBmRUplMDRLSTNpNE5jOTJhdEUxbk4zRFJydUhHa19yMnowZ0hTZnEtYyJ9.-sma5lEqaxtAIRh7xhFM38h16dBFftt_iBbHbj1JwcryMEcVwgve7mCJXoODzcLDeqw_u0uPKlZ7zm-FcWSMCg.siFixdIyNPB3aZRczlSW8zsRF4_UhXcVQ_G5h25u91BF51Mh9eWeaGgDewwRF22EbzPAzKlUOKavi2TDvoG8nBA",
+      "expectedCode": "ADC_PROOF_INVALID"
+    }
   ]
 }

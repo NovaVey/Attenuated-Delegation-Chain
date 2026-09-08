@@ -55,15 +55,23 @@ export function encodeToken(token: ParsedToken): string {
   return segments.join(".");
 }
 
+/** Number of blocks a segment array of this length represents:
+ * version + 2*N block/sig segments + proof. */
+export function blockCountForSegments(segmentCount: number): number {
+  return (segmentCount - 2) / 2;
+}
+
 /**
- * Parses the wire string into a ParsedToken, retaining the exact raw
- * bytes for each block and signature (decoded from base64url, but not
- * otherwise reinterpreted). Structural validation only — this does NOT
- * check signatures, proof correctness, depth caps, or caveats; that is
- * verify()'s job. A malformed/truncated string always throws SyntaxError
- * here rather than silently producing a partial token.
+ * Splits and structurally validates the wire string into `.`-separated
+ * segments, WITHOUT decoding any individual segment's base64url payload.
+ * This is the cheap, allocation-light gate: segment count (and therefore
+ * depth, via blockCountForSegments) is derivable from its result alone.
+ * verify() calls this first so an over-deep or truncated token can be
+ * denied — including on depth — before paying for a base64 decode of
+ * every block and signature. decodeToken() (below) does that heavier work
+ * as a second step.
  */
-export function decodeToken(wire: string): ParsedToken {
+export function splitSegments(wire: string): string[] {
   if (wire.length === 0) {
     throw new SyntaxError("empty token");
   }
@@ -80,7 +88,20 @@ export function decodeToken(wire: string): ParsedToken {
     throw new SyntaxError(`unsupported version '${segments[0]}'`);
   }
 
-  const blockCount = (segments.length - 2) / 2;
+  return segments;
+}
+
+/**
+ * Decodes already-split segments (from splitSegments) into a ParsedToken,
+ * retaining the exact raw bytes for each block and signature (decoded
+ * from base64url, but not otherwise reinterpreted). This is the expensive
+ * per-segment pass — base64 decode plus a length check on every
+ * signature — and does NOT check depth caps (splitSegments's caller
+ * should do that first), signatures, proof correctness, or caveats;
+ * those are verify()'s job.
+ */
+export function decodeSegments(segments: string[]): ParsedToken {
+  const blockCount = blockCountForSegments(segments.length);
   const blocks: Uint8Array[] = [];
   const sigs: Uint8Array[] = [];
   for (let i = 0; i < blockCount; i++) {
@@ -100,4 +121,18 @@ export function decodeToken(wire: string): ParsedToken {
   const proof = decodeProof(segments[segments.length - 1]!);
 
   return { version: VERSION_TAG, blocks, sigs, proof };
+}
+
+/**
+ * Parses the wire string into a ParsedToken. Structural validation only —
+ * this does NOT check signatures, proof correctness, depth caps, or
+ * caveats; that is verify()'s job. A malformed/truncated string always
+ * throws SyntaxError here rather than silently producing a partial token.
+ *
+ * Equivalent to `decodeSegments(splitSegments(wire))`; verify() calls
+ * those two steps separately so it can enforce a depth cap between them,
+ * before paying for the full per-segment decode.
+ */
+export function decodeToken(wire: string): ParsedToken {
+  return decodeSegments(splitSegments(wire));
 }

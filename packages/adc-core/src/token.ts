@@ -1,9 +1,16 @@
 import { bytesEqual, utf8Decode } from "./bytes.js";
 import { ALG_ED25519, decodeBlock, encodeBlock, type RawCaveat } from "./block.js";
 import { buildSignInput } from "./signing.js";
-import { generateKeypair, getPublicKey, sign, verifySignature, type Keypair } from "./crypto.js";
+import {
+  generateKeypair,
+  getPublicKey,
+  sign,
+  verifySignature,
+  SECRET_KEY_LEN,
+  type Keypair,
+} from "./crypto.js";
 import { AdcError, type ReasonCode } from "./errors.js";
-import { decodeToken, encodeToken } from "./wire.js";
+import { blockCountForSegments, decodeSegments, splitSegments } from "./wire.js";
 import type { ParsedToken } from "./types.js";
 
 export type { ParsedToken, Proof } from "./types.js";
@@ -28,11 +35,43 @@ export interface MintOptions {
 
 export type AttenuateOptions = MintOptions;
 
+/**
+ * Resolves the keypair whose secret signs the *next* block and whose
+ * public half becomes this block's `nk`. With no `nextKeypair` supplied,
+ * generates one randomly (the normal path). With one supplied (the
+ * testing/vector-generation hook), validates that the secret actually
+ * derives the given public key — a caller who accidentally passes
+ * mismatched keys would otherwise get a token back with no error at all,
+ * whose proof can never be satisfied, failing only much later at
+ * verify() with a confusing, far-away ADC_PROOF_INVALID or
+ * ADC_SIG_INVALID — and returns a fresh copy of the secret rather than
+ * the caller's own buffer, so the returned token never shares a live
+ * buffer with a Keypair object the caller might later zero out as
+ * ordinary key hygiene.
+ */
+function resolveNextKeypair(nextKeypair: Keypair | undefined): Keypair {
+  if (nextKeypair === undefined) {
+    return generateKeypair();
+  }
+  if (nextKeypair.secretKey.length !== SECRET_KEY_LEN) {
+    throw new AdcError(
+      "ADC_MALFORMED",
+      `nextKeypair.secretKey must be ${SECRET_KEY_LEN} bytes, got ${nextKeypair.secretKey.length}`,
+    );
+  }
+  const derivedPublicKey = getPublicKey(nextKeypair.secretKey);
+  if (!bytesEqual(derivedPublicKey, nextKeypair.publicKey)) {
+    throw new AdcError("ADC_MALFORMED", "nextKeypair.publicKey does not match nextKeypair.secretKey");
+  }
+  // derivedPublicKey is already a fresh array from getPublicKey(), not
+  // aliased to the caller's buffer; only secretKey needs an explicit copy.
+  return { secretKey: Uint8Array.from(nextKeypair.secretKey), publicKey: derivedPublicKey };
+}
+
 /** Mints a fresh root (block 0), signed by the root secret key. Returns
  * an attenuable token whose proof is the freshly generated next-secret. */
 export function mintRoot(rootSecretKey: Uint8Array, opts: MintOptions = {}): ParsedToken {
-  const { secretKey: nextSecretKey, publicKey: nextPublicKey } =
-    opts.nextKeypair ?? generateKeypair();
+  const { secretKey: nextSecretKey, publicKey: nextPublicKey } = resolveNextKeypair(opts.nextKeypair);
 
   const blockBytes = encodeBlock({
     alg: ALG_ED25519,
@@ -66,8 +105,7 @@ export function attenuate(token: ParsedToken, opts: AttenuateOptions = {}): Pars
   }
 
   const currentSecretKey = token.proof.secretKey;
-  const { secretKey: nextSecretKey, publicKey: nextPublicKey } =
-    opts.nextKeypair ?? generateKeypair();
+  const { secretKey: nextSecretKey, publicKey: nextPublicKey } = resolveNextKeypair(opts.nextKeypair);
 
   const blockBytes = encodeBlock({
     alg: ALG_ED25519,
@@ -97,8 +135,8 @@ export function seal(token: ParsedToken): ParsedToken {
   if (token.proof.type !== "attenuable") {
     throw new AdcError("ADC_PROOF_INVALID", "seal() requires an attenuable token; this token is already sealed");
   }
-  if (token.sigs.length === 0) {
-    throw new AdcError("ADC_MALFORMED", "token has no blocks");
+  if (token.blocks.length === 0 || token.blocks.length !== token.sigs.length) {
+    throw new AdcError("ADC_MALFORMED", "token has an inconsistent block/signature count");
   }
 
   const lastSignature = token.sigs[token.sigs.length - 1]!;
@@ -136,8 +174,11 @@ function deny(code: ReasonCode, reason: string): VerifyResult {
  *
  * Never throws on malformed or hostile token input: every failure mode
  * reachable from `tokenBytes` alone resolves to a Deny with a reason
- * code, never an exception. An invalid `rootPublicKey` argument (not
- * derived from the token) is a caller bug and does throw.
+ * code, never an exception. `rootPublicKey` is validated for length only
+ * (32 bytes) and throws RangeError if wrong — it is not checked to be a
+ * valid curve point, since a syntactically-valid-length but semantically
+ * invalid root key just makes every signature check fail closed
+ * (Deny(ADC_SIG_INVALID)), which is safe.
  */
 export function verify(
   tokenBytes: string | Uint8Array,
@@ -156,16 +197,27 @@ export function verify(
     return deny("ADC_MALFORMED", "token bytes are not valid UTF-8");
   }
 
-  let token: ParsedToken;
+  // Split first and check depth before decoding a single block or
+  // signature: segment count (and therefore depth) is derivable from the
+  // cheap split/structural check alone, so an over-deep token is denied
+  // without paying for a base64 decode of every block/sig it carries.
+  let segments: string[];
   try {
-    token = decodeToken(wire);
+    segments = splitSegments(wire);
   } catch (err) {
     return deny("ADC_MALFORMED", `failed to parse token: ${(err as Error).message}`);
   }
 
-  const depth = token.blocks.length - 1;
+  const depth = blockCountForSegments(segments.length) - 1;
   if (depth > maxDepth) {
     return deny("ADC_DEPTH_EXCEEDED", `depth ${depth} exceeds max depth ${maxDepth}`);
+  }
+
+  let token: ParsedToken;
+  try {
+    token = decodeSegments(segments);
+  } catch (err) {
+    return deny("ADC_MALFORMED", `failed to parse token: ${(err as Error).message}`);
   }
 
   let currentVerifyKey = rootPublicKey;
