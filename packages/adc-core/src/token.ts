@@ -13,6 +13,7 @@ import { AdcError, type ReasonCode } from "./errors.js";
 import { blockCountForSegments, decodeSegments, splitSegments } from "./wire.js";
 import type { ParsedToken } from "./types.js";
 import { caveatToRaw, evaluateCaveat, parseCaveat, resolveFacts, type Caveat, type Facts } from "./caveats.js";
+import { blockSignatureHash } from "./revocation.js";
 
 export type { ParsedToken, Proof } from "./types.js";
 export { encodeToken, decodeToken } from "./wire.js";
@@ -182,6 +183,20 @@ export interface VerifyOptions {
   /** Clock skew allowance (seconds) for `expires` caveat evaluation.
    * Default DEFAULT_CLOCK_SKEW_SECONDS. */
   readonly clockSkewSeconds?: number;
+  /**
+   * A set of revoked block-signature hashes (`blockSignatureHash()`
+   * output — see revocation.ts), checked against EVERY block in the
+   * token, not just the terminal one — docs/PLAN.md Phase 7: "Revoking a
+   * root hash kills every descendant for free, since every descendant
+   * token contains block 0's signature." Omitted entirely (the default):
+   * no revocation check runs at all, matching every other optional
+   * `VerifyOptions` field's additive-opt-in shape. This library provides
+   * the offline check, not the network fetch that keeps it fresh — see
+   * `@adc/revocation` for a client that polls a signed revocation list
+   * and produces this set; a verifier that cares about revocation is
+   * responsible for supplying a live one.
+   */
+  readonly revokedHashes?: ReadonlySet<string>;
 }
 
 function deny(code: ReasonCode, reason: string): VerifyResult {
@@ -303,7 +318,22 @@ export function verify(
     }
   }
 
-  // Step 4 (revocation) lands in Phase 7; not implemented yet.
+  // Step 4: revocation check. Every block's own signature hash is
+  // checked, not just the terminal one — a descendant token's wire bytes
+  // still contain every ancestor's block and signature, so revoking an
+  // ancestor (most commonly block 0, "the root hash") denies every
+  // descendant for free without the revocation list ever needing to name
+  // them individually (docs/PLAN.md Phase 7). Runs after the proof check
+  // and before caveat evaluation, per 1.6's ordering, so "revoked" is
+  // never confused with "no authority" (steps 1-3, already past) or a
+  // caveat-shaped denial (step 5, below).
+  if (opts.revokedHashes) {
+    for (let i = 0; i < token.sigs.length; i++) {
+      if (opts.revokedHashes.has(blockSignatureHash(token.sigs[i]!))) {
+        return deny("ADC_REVOKED", `block ${i} has been revoked`);
+      }
+    }
+  }
 
   // Step 5: every caveat in every block must be satisfied. parseCaveat's
   // deep validation (closed-vocabulary membership, per-kind shape) runs

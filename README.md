@@ -35,11 +35,19 @@ See [`docs/PLAN.md`](docs/PLAN.md) for the full design and phased build plan.
   Principal-Graph has no write API or importable library surface, so this
   package builds plain, correctly-shaped event data — event identity is
   the sha256 of each block's Ed25519 signature, the same value Phase 7's
-  revocation list will reuse — for a Principal-Graph-side adapter to
+  revocation list reuses — for a Principal-Graph-side adapter to
   consume; see that package's README for the worked reference adapter.
-- No revocation yet — see the packages'/service's READMEs for exact scope
-  and security notes.
-- Phase 7 (revocation) is not implemented.
+- **Phase 7 — done.** [`packages/adc-revocation`](packages/adc-revocation):
+  a signed revocation-list format, signing/verification, and a polling
+  client. `@adc/core`'s `verify()` gained an offline `revokedHashes` check
+  (Step 4 of its pipeline, before caveat evaluation) against the same
+  per-block signature hash Phase 6 defined — now the canonical
+  `blockSignatureHash()` in `@adc/core` itself, with `@adc/graph`'s
+  `blockIdentity()` delegating to it. [`services/mint`](services/mint)
+  gained `POST /revoke` (admin-authenticated) and `GET /revocations`
+  (unauthenticated, signed with the same root key that mints). Liveness
+  bound: `list TTL (60s) + poll interval (30s) + clock skew (60s) = 150s`
+  worst case — see that package's README for the full writeup.
 
 ## Packages
 
@@ -49,6 +57,7 @@ packages/adc-testkit   reference evaluator, generators, differential fuzzer (Pha
 services/mint           HTTP mint service: holds the root key, RBA scope bounding (Phase 4)
 packages/adc-broker     Taint-Tracked-Tool-Broker adapter: verify-before-the-gate, facts, redaction (Phase 5)
 packages/adc-graph      Principal-Graph event emitters: per-block-signature-hash identity (Phase 6)
+packages/adc-revocation signed revocation-list format, signing/verification, polling client (Phase 7)
 ```
 
 ```

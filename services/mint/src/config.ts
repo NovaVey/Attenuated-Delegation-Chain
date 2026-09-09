@@ -15,6 +15,11 @@ export interface ServiceConfig {
     readonly apiKey: string;
     readonly timeoutMs?: number;
   };
+  /** Bearer token required on POST /revoke — see server.ts. A secret in
+   * the same sense as everything else in this file (never logged, never
+   * echoed back), though its blast radius is narrower than the root key:
+   * holding it lets someone revoke blocks, not mint or forge tokens. */
+  readonly adminApiKey: string;
 }
 
 function requireEnv(env: NodeJS.ProcessEnv, name: string): string {
@@ -48,6 +53,7 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Service
   const rootSecretKey = decodeRootSecretKey(requireEnv(env, "MINT_ROOT_SECRET_KEY_B64"));
   const rbaBaseUrl = requireEnv(env, "RBA_BASE_URL");
   const rbaApiKey = requireEnv(env, "RBA_API_KEY");
+  const adminApiKey = requireEnv(env, "MINT_ADMIN_API_KEY");
 
   let timeoutMs: number | undefined;
   if (env.RBA_TIMEOUT_MS !== undefined) {
@@ -57,5 +63,5 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Service
     }
   }
 
-  return { port, rootSecretKey, rba: { baseUrl: rbaBaseUrl, apiKey: rbaApiKey, timeoutMs } };
+  return { port, rootSecretKey, rba: { baseUrl: rbaBaseUrl, apiKey: rbaApiKey, timeoutMs }, adminApiKey };
 }

@@ -9,6 +9,7 @@ function baseEnv(overrides: Record<string, string | undefined> = {}): NodeJS.Pro
     MINT_ROOT_SECRET_KEY_B64: VALID_KEY_B64,
     RBA_BASE_URL: "https://rba.example.com",
     RBA_API_KEY: "test-api-key",
+    MINT_ADMIN_API_KEY: "test-admin-key",
     ...overrides,
   };
 }
@@ -20,6 +21,7 @@ test("loads a valid config, defaulting PORT to 3001", () => {
   assert.equal(config.rba.baseUrl, "https://rba.example.com");
   assert.equal(config.rba.apiKey, "test-api-key");
   assert.equal(config.rba.timeoutMs, undefined);
+  assert.equal(config.adminApiKey, "test-admin-key");
 });
 
 test("respects an explicit PORT", () => {
@@ -53,6 +55,12 @@ test("throws on a missing RBA_API_KEY", () => {
   const env = baseEnv();
   delete env.RBA_API_KEY;
   assert.throws(() => loadConfigFromEnv(env), /RBA_API_KEY/);
+});
+
+test("throws on a missing MINT_ADMIN_API_KEY", () => {
+  const env = baseEnv();
+  delete env.MINT_ADMIN_API_KEY;
+  assert.throws(() => loadConfigFromEnv(env), /MINT_ADMIN_API_KEY/);
 });
 
 test("throws on an invalid PORT", () => {

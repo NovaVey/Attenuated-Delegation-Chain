@@ -62,9 +62,15 @@ sha256 of the raw 64-byte Ed25519 signature, hex-encoded. Chosen because:
 - `blockIdentity(token.sigs[0])` for a root token's block 0 is exactly "the
   root hash" `docs/PLAN.md`'s own Phase 7 section refers to: "revoking a
   root hash kills every descendant for free, since every descendant token
-  contains block 0's signature." Phase 7 (not built yet) reuses this same
-  function as its revocation-list lookup key, per the plan's own
-  instruction — see `blockIdentity()`'s doc comment in `hash.ts`.
+  contains block 0's signature." **Phase 7 landed the canonical
+  definition in `@adc/core` itself** — `blockSignatureHash()` there, since
+  `verify()`'s own offline revocation check needs it internally, and
+  `@adc/core` is the one package this whole stack already depends on
+  (never the reverse). `blockIdentity()` here is now a thin,
+  byte-for-byte-identical alias delegating to it, kept for this package's
+  already-public API — see `@adc/core`'s own `revocation.ts` and the
+  `packages/adc-core` README's "Revocation" section for the real
+  definition and `verify()`'s `revokedHashes` option.
 
 A signature is not secret (unlike an attenuable token's proof field,
 `docs/PLAN.md` 1.2) — hashing here is for a fixed-length, uniform key

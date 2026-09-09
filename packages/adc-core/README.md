@@ -4,17 +4,21 @@ Format, sign, attenuate, seal, verify for Attenuated Delegation Chain tokens.
 No integration dependencies — see [`docs/PLAN.md`](../../docs/PLAN.md) for the
 full design.
 
-**Scope so far (Phases 1-2).** Signature-chain integrity (mint, attenuate,
-seal, verify the chain and proof) plus the closed caveat vocabulary
+**Scope so far (Phases 1-2, 7).** Signature-chain integrity (mint,
+attenuate, seal, verify the chain and proof), the closed caveat vocabulary
 (`scope`, `sinks`, `taint_max`, `expires`, `max_depth`, `hosts`, `aud`) and
-its evaluation against caller-supplied facts. It does **not** check
-revocation or consult Relationship-Based-Authorization — those land in
-Phases 4 and 7. A `verify()` `Allow` means *the chain is a validly signed,
-non-tampered, non-truncated attenuation of the given root key, and every
+its evaluation against caller-supplied facts, and an offline revocation
+check against a caller-supplied set of revoked block-signature hashes.
+It does **not** consult Relationship-Based-Authorization, and it does not
+fetch a revocation list itself — that's Phase 4 (`services/mint`) and
+`@adc/revocation` respectively. A `verify()` `Allow` means *the chain is a
+validly signed, non-tampered, non-truncated attenuation of the given root
+key, no block in it appears in the revoked set you supplied, and every
 caveat in every block is satisfied by the supplied facts* — it says
-nothing about revocation, and nothing beyond what the caveats you actually
-minted encode (an unrestricted token, i.e. one with no caveats at all,
-still verifies).
+nothing beyond what the caveats you actually minted encode (an
+unrestricted token, i.e. one with no caveats at all, still verifies), and
+nothing about revocation if you didn't supply a `revokedHashes` set at all
+(the check is opt-in — see "Revocation" below).
 
 ## Format
 
@@ -152,6 +156,47 @@ levels are the one closed enum defined here, since the ordering
 (`TRUSTED < DERIVED < RAW_UNTRUSTED`) is part of this spec, not an
 external system's.
 
+## Revocation
+
+```ts
+import { blockSignatureHash, verify } from "@adc/core";
+
+const revoked = new Set([blockSignatureHash(rootToken.sigs[0])]); // e.g. from @adc/revocation
+const result = verify(wire, rootPublicKey, facts, { revokedHashes: revoked });
+// -> { ok: false, code: "ADC_REVOKED", reason: "block 0 has been revoked" }
+```
+
+`blockSignatureHash(signature)` — sha256 of a block's raw 64-byte Ed25519
+signature, hex-encoded — is the one canonical definition of "the per-block
+signature hash" docs/PLAN.md's Phase 6 introduces and Phase 7 reuses
+verbatim ("define it once here and reuse it"): `@adc/graph`'s own
+block-identity helper delegates to this same function, so an event's
+identity and its revocation identifier are always the same string for the
+same block.
+
+`verify()`'s `opts.revokedHashes` (step 4 of docs/PLAN.md 1.6's ordering,
+between the proof check and caveat evaluation) checks **every** block in
+the presented chain against the set, not just the terminal one — a
+descendant token's wire bytes still contain every ancestor's block and
+signature, so revoking block 0 ("the root hash") denies every descendant
+for free, without the revocation list ever needing to name them
+individually. Revoking a non-root block denies that hop and everything
+attenuated from it, but never a sibling branch attenuated from the same
+parent (siblings mint their own, distinct block/signature pairs).
+
+**Opt-in, like every other `VerifyOptions` field.** Omitting
+`revokedHashes` entirely performs no revocation check at all — this
+package provides the offline check, never the network fetch that keeps a
+revoked set current. See [`@adc/revocation`](../adc-revocation) for a
+client that polls a signed revocation list on an interval and produces
+this set, and [`services/mint`](../../services/mint) for where that list
+is signed and served. A verifier that cares about revocation is
+responsible for wiring a live one in — the same "library ships the
+mechanism, the integrator supplies the real-world fact" split this
+package already uses for `Facts` (docs/PLAN.md section 0: offline
+verification is the property that makes a *missing* revoked set a valid,
+if less protected, configuration rather than a broken one).
+
 ## Security notes specific to this package
 
 - Ed25519 verification runs in strict RFC 8032/FIPS 186-5 mode
@@ -271,3 +316,10 @@ npm test        # node:test over dist/test/*.test.js
   validation. `test/property.test.ts` adds `fast-check` properties
   confirming `expires`/`max_depth` agree with the minimum-across-blocks
   rule for randomized values, not just the hand-picked cases.
+- `test/revocation.test.ts` — `blockSignatureHash()` determinism; root
+  revocation denying every descendant across multiple attenuation hops and
+  through `seal()`; a non-root revocation scoped to that hop and its
+  descendants but never a sibling branch; the exact block index named in
+  the denial reason; and that revocation (step 4) is checked before, and
+  therefore takes precedence over, caveat evaluation (step 5) when a token
+  is both revoked and independently caveat-invalid.
