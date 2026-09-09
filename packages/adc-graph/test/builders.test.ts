@@ -134,6 +134,38 @@ test("buildSealEvent: references the LAST EXISTING block (same identity as the p
   assert.equal(sealEvent.decision, "allow");
 });
 
+test("buildSealEvent: sealing directly after mint (no prior attenuation) references block 0 correctly", () => {
+  const { rootSecretKey } = freshRoot();
+  const root = mintRoot(rootSecretKey);
+  const sealed = seal(root);
+
+  const sealEvent = buildSealEvent(sealed, { actor: AGENT });
+
+  assert.equal(sealEvent.resource.externalId, blockIdentity(root.sigs[0]!));
+  assert.ok(sealEvent.taintLabels.includes("depth:0"));
+});
+
+// --- malformed-token handling ------------------------------------------------
+
+test("buildMintEvent/buildAttenuateEvent/buildSealEvent throw a clear RangeError on a hand-constructed token with no blocks, instead of an opaque node:crypto TypeError", () => {
+  const empty: ParsedToken = { version: "adc1", blocks: [], sigs: [], proof: { type: "attenuable", secretKey: new Uint8Array(32) } };
+  const { rootPublicKey } = freshRoot();
+
+  assert.throws(() => buildMintEvent(empty, rootPublicKey), RangeError);
+  assert.throws(() => buildAttenuateEvent(empty, { actor: AGENT }), RangeError);
+  assert.throws(() => buildSealEvent(empty, { actor: AGENT }), RangeError);
+});
+
+test("buildMintEvent/buildAttenuateEvent/buildSealEvent throw a clear RangeError on mismatched blocks/sigs lengths", () => {
+  const { rootSecretKey } = freshRoot();
+  const real = mintRoot(rootSecretKey);
+  const mismatched: ParsedToken = { ...real, sigs: [...real.sigs, real.sigs[0]!] };
+
+  assert.throws(() => buildMintEvent(mismatched, freshRoot().rootPublicKey), RangeError);
+  assert.throws(() => buildAttenuateEvent(mismatched, { actor: AGENT }), RangeError);
+  assert.throws(() => buildSealEvent(mismatched, { actor: AGENT }), RangeError);
+});
+
 // --- buildVerifyEvent -------------------------------------------------------
 
 test("buildVerifyEvent: a real successful verify produces decision 'allow', resource = the terminal block's identity", () => {
@@ -208,6 +240,36 @@ test("buildVerifyEvent: accepts Uint8Array tokenBytes, same as @adc/core's own v
   assert.equal(event.resource.externalId, blockIdentity(token.sigs[0]!));
 });
 
+test("buildVerifyEvent: invalid-UTF-8 Uint8Array tokenBytes (the TextDecoder fatal-throw path) falls back cleanly, matching a real ADC_MALFORMED verify() result", () => {
+  const { rootPublicKey } = freshRoot();
+  const invalidUtf8 = new Uint8Array([0xff, 0xfe, 0xfd, 0x80, 0x81]);
+  const result = verify(invalidUtf8, rootPublicKey);
+  assert.equal(result.ok, false);
+  if (result.ok) throw new Error("unreachable");
+  assert.equal(result.code, "ADC_MALFORMED");
+
+  const event = buildVerifyEvent(invalidUtf8, result, { actor: AGENT });
+
+  assert.equal(event.decision, "deny");
+  assert.ok(event.resource.externalId.startsWith("undecodable:"));
+  // Deterministic: the fallback identity must be derived from the exact
+  // raw bytes given, not a re-encoded/transformed version of them.
+  const expected = createHash("sha256").update(invalidUtf8).digest("hex");
+  assert.equal(event.resource.externalId, `undecodable:${expected}`);
+});
+
+test("buildVerifyEvent: a Uint8Array that IS valid UTF-8 but fails to decode as a token still falls back using the original bytes (the non-string rawBytes branch)", () => {
+  const { rootPublicKey } = freshRoot();
+  const validUtf8Garbage = new TextEncoder().encode("adc1.not-a-real-token");
+  const result = verify(validUtf8Garbage, rootPublicKey);
+  assert.equal(result.ok, false);
+
+  const event = buildVerifyEvent(validUtf8Garbage, result, { actor: AGENT });
+
+  const expected = createHash("sha256").update(validUtf8Garbage).digest("hex");
+  assert.equal(event.resource.externalId, `undecodable:${expected}`);
+});
+
 test("buildVerifyEvent: a sealed, attenuated token's terminal identity matches buildSealEvent's own resource for the same token", () => {
   const { rootSecretKey, rootPublicKey } = freshRoot();
   const child = attenuate(mintRoot(rootSecretKey), { caveats: [] });
@@ -238,6 +300,31 @@ test("buildRevokeEvent: resource.externalId is exactly the given hash, decision 
   assert.deepEqual(event.principal, OPERATOR);
   assert.equal(event.requestDigest, null);
   assert.ok(event.taintLabels.includes("reason:compromised key"));
+});
+
+test("buildRevokeEvent: rejects an empty string instead of silently writing a 'successful' revoke of nothing", () => {
+  assert.throws(() => buildRevokeEvent("", { actor: OPERATOR, reason: "test" }), RangeError);
+});
+
+test("buildRevokeEvent: rejects an arbitrary non-hash string (e.g. an operator typo)", () => {
+  assert.throws(() => buildRevokeEvent("not-a-real-hash", { actor: OPERATOR, reason: "test" }), RangeError);
+  assert.throws(() => buildRevokeEvent("deadbeef", { actor: OPERATOR, reason: "test" }), RangeError, "too short to be a real sha256 hex digest");
+});
+
+test("buildRevokeEvent: rejects one of buildVerifyEvent's own 'undecodable:'-prefixed fallback identities — it was never a real block-signature hash", () => {
+  const { rootPublicKey } = freshRoot();
+  const result = verify("garbage-token", rootPublicKey);
+  const denyEvent = buildVerifyEvent("garbage-token", result, { actor: AGENT });
+  assert.ok(denyEvent.resource.externalId.startsWith("undecodable:"));
+
+  assert.throws(() => buildRevokeEvent(denyEvent.resource.externalId, { actor: OPERATOR, reason: "test" }), RangeError);
+});
+
+test("buildRevokeEvent: accepts a real blockIdentity() output unchanged (uppercase hex is rejected — blockIdentity() only ever produces lowercase)", () => {
+  const { rootSecretKey, rootPublicKey } = freshRoot();
+  const rootHash = buildMintEvent(mintRoot(rootSecretKey), rootPublicKey).resource.externalId;
+  assert.doesNotThrow(() => buildRevokeEvent(rootHash, { actor: OPERATOR, reason: "test" }));
+  assert.throws(() => buildRevokeEvent(rootHash.toUpperCase(), { actor: OPERATOR, reason: "test" }), RangeError);
 });
 
 // --- Full lifecycle consistency ---------------------------------------------

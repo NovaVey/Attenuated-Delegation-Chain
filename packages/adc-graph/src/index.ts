@@ -13,7 +13,7 @@
 export type { GraphPrincipalKind, GraphPrincipalIdentity, GraphResourceIdentity } from "./identity.js";
 export { ADC_RESOURCE_SOURCE, ADC_BLOCK_RESOURCE_KIND, rootKeyPrincipal, toBase64Url } from "./identity.js";
 
-export { blockIdentity, blockResource, undecodableResource } from "./hash.js";
+export { blockIdentity, blockResource, undecodableResource, isBlockIdentity, BLOCK_IDENTITY_PATTERN } from "./hash.js";
 
 export type { GraphEvent, GraphSink } from "./event.js";
 

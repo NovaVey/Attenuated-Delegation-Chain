@@ -26,6 +26,17 @@ export function blockIdentity(signature: Uint8Array): string {
   return createHash("sha256").update(signature).digest("hex");
 }
 
+/** The exact shape `blockIdentity()` always produces: sha256 hex, lowercase,
+ * 64 characters. Exported so callers that receive a hash from elsewhere
+ * (e.g. `buildRevokeEvent`'s caller-supplied `blockSignatureHash` — see
+ * builders.ts) can validate it looks like a real block identity before
+ * treating it as one, rather than accepting an arbitrary string silently. */
+export const BLOCK_IDENTITY_PATTERN = /^[0-9a-f]{64}$/;
+
+export function isBlockIdentity(value: string): boolean {
+  return BLOCK_IDENTITY_PATTERN.test(value);
+}
+
 /** The Principal-Graph resource identity for the block `signature`
  * belongs to — see identity.ts's `ADC_BLOCK_RESOURCE_KIND`/
  * `ADC_RESOURCE_SOURCE` for why this is a distinct resource row per

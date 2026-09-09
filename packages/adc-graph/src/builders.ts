@@ -1,8 +1,31 @@
 import { createHash } from "node:crypto";
 import { decodeBlock, decodeToken, type ParsedToken, type VerifyResult } from "@adc/core";
 import type { GraphEvent } from "./event.js";
-import { blockResource, undecodableResource } from "./hash.js";
+import { blockResource, isBlockIdentity, undecodableResource } from "./hash.js";
 import { ADC_BLOCK_RESOURCE_KIND, ADC_RESOURCE_SOURCE, rootKeyPrincipal, type GraphPrincipalIdentity } from "./identity.js";
+
+/**
+ * `blocks`/`sigs` are typed `readonly Uint8Array[]` with no compile-time
+ * non-empty or equal-length guarantee — that invariant is only actually
+ * upheld at runtime, by `@adc/core`'s own `mintRoot`/`attenuate`/`seal`/
+ * `decodeToken`, each of which validates it explicitly (`attenuate()`/
+ * `seal()` throw `AdcError("ADC_MALFORMED", ...)` on exactly this check —
+ * `packages/adc-core/src/token.ts`). A hand-constructed or otherwise
+ * malformed `ParsedToken` reaching this package's builders without going
+ * through one of those would previously fail with an opaque, low-level
+ * `TypeError` from deep inside `node:crypto` (a non-null-asserted
+ * `undefined` reaching `createHash().update()`) instead of a clear,
+ * actionable error — this repeats @adc/core's own check so the failure
+ * mode matches: loud, immediate, and clearly attributable to a malformed
+ * token, not a cryptic crash three calls downstream.
+ */
+function assertValidToken(token: ParsedToken): void {
+  if (token.blocks.length === 0 || token.blocks.length !== token.sigs.length) {
+    throw new RangeError(
+      `adc-graph: token has an inconsistent block/signature count (blocks: ${token.blocks.length}, sigs: ${token.sigs.length}) — expected both to be equal and at least 1`,
+    );
+  }
+}
 
 interface CommonOpts {
   /** Defaults to the real wall clock — pass explicitly for deterministic
@@ -57,6 +80,7 @@ function blockLabels(blockBytes: Uint8Array, depth: number): string[] {
  * there's no separate `actor` option to get wrong or duplicate.
  */
 export function buildMintEvent(token: ParsedToken, rootPublicKey: Uint8Array, opts: CommonOpts = {}): GraphEvent {
+  assertValidToken(token);
   const blockBytes = token.blocks[0]!;
   const sig = token.sigs[0]!;
   return {
@@ -89,6 +113,7 @@ interface ActorOpts extends CommonOpts {
 /** Builds an 'attenuate' event for the newly-appended block (the LAST
  * block in `childToken` — attenuate() always appends exactly one). */
 export function buildAttenuateEvent(childToken: ParsedToken, opts: ActorOpts): GraphEvent {
+  assertValidToken(childToken);
   const lastIndex = childToken.blocks.length - 1;
   const blockBytes = childToken.blocks[lastIndex]!;
   const sig = childToken.sigs[lastIndex]!;
@@ -111,6 +136,7 @@ export function buildAttenuateEvent(childToken: ParsedToken, opts: ActorOpts): G
  * the resource this event references is the LAST EXISTING block (the one
  * that's now sealed), not a new one: sealing appends no block. */
 export function buildSealEvent(sealedToken: ParsedToken, opts: ActorOpts): GraphEvent {
+  assertValidToken(sealedToken);
   const lastIndex = sealedToken.blocks.length - 1;
   const blockBytes = sealedToken.blocks[lastIndex]!;
   const sig = sealedToken.sigs[lastIndex]!;
@@ -209,8 +235,26 @@ interface RevokeOpts extends CommonOpts {
  * `ParsedToken`, since a revocation is keyed by hash alone — the operator
  * revoking a credential may never hold the token itself (e.g. revoking a
  * lost/compromised root from an out-of-band report of its known hash).
+ *
+ * Validates `blockSignatureHash` looks like a real `blockIdentity()`
+ * output (64-character lowercase hex) — every OTHER builder derives its
+ * resource identity from actual cryptographic bytes via `blockResource()`/
+ * `undecodableResource()`; this is the one builder that takes an identity
+ * string directly from a caller (an operator transcribing a hash from an
+ * incident report, say), which is exactly the path most likely to carry a
+ * typo, an empty string, or — since `undecodableResource()`'s own
+ * `undecodable:`-prefixed fallback identities are visible in earlier
+ * `verify` events an operator might copy from — a fallback identity that
+ * was never a real signature hash to begin with. Throws `RangeError`
+ * rather than silently writing a "successful" revoke event for a target
+ * that was never a real block identity.
  */
 export function buildRevokeEvent(blockSignatureHash: string, opts: RevokeOpts): GraphEvent {
+  if (!isBlockIdentity(blockSignatureHash)) {
+    throw new RangeError(
+      `adc-graph: buildRevokeEvent's blockSignatureHash must be a 64-character lowercase hex sha256 digest (blockIdentity()'s own output shape), got ${JSON.stringify(blockSignatureHash)}`,
+    );
+  }
   return {
     occurredAt: resolveNow(opts),
     principal: opts.actor,

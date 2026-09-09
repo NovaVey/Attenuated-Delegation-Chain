@@ -125,6 +125,37 @@ as `src/adapters/adc-graph-sink.ts` per that repo's own `CONTRIBUTING.md`
 adapter conventions (route every upsert through `ensurePrincipal`/
 `ensureResource`, never a raw `INSERT`).
 
+### The `on_behalf_of`-without-a-grant trap, and why the adapter below writes `grant_edge` too
+
+Found in adversarial review before this shipped, and worth explaining in
+full since it's exactly the kind of gap that's invisible until someone
+actually wires this up: every ADC block gets its **own, one-off**
+`resource` row (`blockResource()` — a fresh `external_id` per hop, by
+design, since event identity is the per-block signature hash). Principal-
+Graph's real `on-behalf-of-escalation` policy
+(`src/policies.ts::checkOnBehalfOfEscalation`) flags exactly this shape:
+
+> an `allow` event with `on_behalf_of` set, where the human named there
+> holds **no live `grant_edge`** on that event's `resource_id` at all.
+
+Since nothing can pre-provision a `grant_edge` for a resource that doesn't
+exist until the very moment the event describing it is written, **every
+single `onBehalfOf`-carrying `mint`/`attenuate`/`seal`/`verify(allow)`/
+`revoke` event this package ever builds would be reported as a privilege
+escalation** by a naive adapter that only writes `event` rows — a 100%
+false-positive rate on the most important accountability signal this
+package can emit, even though nothing escalated: the human legitimately
+holds and is exercising their own delegated credential.
+
+The fix is structural, not a suppression: when an event carries
+`onBehalfOf`, the adapter also establishes the fact that makes it true —
+that the named human holds this specific delegated block — as an ordinary
+`grant_edge` row, in the same write. `'can_use'` is a new relation for a
+new `'adc-block'` resource kind; add both to Principal-Graph's own
+`src/resource-vocabulary.ts` (`'adc-block': ['can_use']`) alongside the
+adapter below, per that file's own header ("update this file the moment a
+new adapter introduces a resource kind or relation string").
+
 ```ts
 // principal-graph/src/adapters/adc-graph-sink.ts (reference — not shipped from this repo)
 import type { Pool } from "pg";
@@ -147,6 +178,22 @@ export function createAdcGraphSink(opts: AdcGraphSinkOptions): GraphSink & { flu
       event.onBehalfOf ? ensurePrincipal(pool, event.onBehalfOf) : Promise.resolve(null),
       ensureResource(pool, event.resource),
     ]);
+
+    // See "The on_behalf_of-without-a-grant trap" above: establish the
+    // grant this event's own on_behalf_of implies, in the same write,
+    // so the on-behalf-of-escalation policy sees a real grant rather than
+    // a one-off resource nobody was ever recorded as holding. Idempotent
+    // (ON CONFLICT DO NOTHING) — a token's later hops re-derive the same
+    // (onBehalfOf, resource) pair fresh each time, never re-granting
+    // something already true.
+    if (onBehalfOf) {
+      await pool.query(
+        `insert into grant_edge (principal_id, resource_id, relation, source)
+         values ($1, $2, 'can_use', 'adc')
+         on conflict (principal_id, resource_id, relation, source) do nothing`,
+        [onBehalfOf, resourceId],
+      );
+    }
 
     await batcher.append({
       occurredAt: event.occurredAt,
@@ -196,8 +243,8 @@ and content of the `GraphEvent`s this package builds:
   key only (never the secret, asserted directly against the raw secret
   bytes), idempotent, deterministic.
 - `test/hash.test.ts` — `blockIdentity()`/`blockResource()`/
-  `undecodableResource()`: deterministic, collision-free between real and
-  fallback identities.
+  `undecodableResource()`/`isBlockIdentity()`: deterministic, collision-free
+  between real and fallback identities.
 - `test/builders.test.ts` — all six event kinds against real tokens,
   including a full mint → attenuate → attenuate → seal → verify → revoke
   lifecycle asserting every hop's resource identity is distinct except
@@ -206,8 +253,21 @@ and content of the `GraphEvent`s this package builds:
   revoke targets block 0's identity, not the terminal block); a caveat
   denial and a wrong-root-key denial both still resolve a *real* block
   identity (only a genuinely undecodable token falls back); depth/caveat
-  labels never leak a sibling block's data into the wrong event.
+  labels never leak a sibling block's data into the wrong event; a
+  hand-constructed malformed `ParsedToken` (no blocks, or a blocks/sigs
+  length mismatch) is rejected with a clear `RangeError` rather than an
+  opaque crash from deep inside `node:crypto`; `buildVerifyEvent`'s
+  invalid-UTF-8 and non-decoding `Uint8Array` paths; `buildRevokeEvent`
+  rejecting an empty string, a typo'd hash, and one of
+  `undecodableResource()`'s own `undecodable:`-prefixed fallback
+  identities.
 - `test/memory-sink.test.ts` — the reference `GraphSink` implementation.
+- `test/index.test.ts` — every export reachable through the package's real
+  public entry point (`src/index.ts`) is exercised at runtime, not just
+  type-checked — closing a real gap `tsc` alone doesn't catch (a value
+  accidentally placed in an `export type {...}` clause instead of a plain
+  `export {...}` one compiles and type-checks cleanly but silently drops
+  the runtime binding from the built JS).
 
 ## Known limitations
 
@@ -228,6 +288,9 @@ and content of the `GraphEvent`s this package builds:
   already relies on (confirmed: the one real precedent for genuine event
   dedup, `postgres-usage.ts`'s time-window check, is a soft, racy heuristic,
   not a hard guarantee).
-- **`buildRevokeEvent()` doesn't validate its `blockSignatureHash`
-  argument** — Phase 7 (the actual revocation mechanism) isn't built yet,
-  so there's no canonical source of "valid hashes" to check against here.
+- **The `on_behalf_of`-without-a-grant trap** (see "A worked reference
+  adapter" above) is a real, demonstrated false-positive mechanism in
+  Principal-Graph's `on-behalf-of-escalation` policy against a *naive*
+  adapter — closed in the reference adapter shown here (it writes a
+  `grant_edge` row alongside the event), but only if a real integrator
+  actually copies that part too, not just the `event`-only half.
