@@ -1,29 +1,26 @@
 import { createHash } from "node:crypto";
+import { blockSignatureHash } from "@adc/core";
 import { ADC_BLOCK_RESOURCE_KIND, ADC_RESOURCE_SOURCE, type GraphResourceIdentity } from "./identity.js";
 
 /**
  * "Event identity is the per-block signature hash. This is also the
  * revocation identifier in Phase 7, so define it once here and reuse it."
- * (docs/PLAN.md Phase 6.) This is that one definition.
- *
- * sha256 of the raw 64-byte Ed25519 signature, hex-encoded — a genuine
- * hash of the signature (matching the literal "signature hash," not just
- * an encoding of the signature itself), fixed-length regardless of proof
- * type, and consistent with every other stable-key hash already in this
- * codebase family: Principal-Graph's own chain-hash (sha256/hex),
- * adc-testkit's exceptions.ts `falseDenyKey()` (sha256/hex), and
- * services/mint's audit-redaction digest (sha256/hex) all make the same
- * choice. Block 0's identity computed this way is exactly "the root hash"
- * docs/PLAN.md's own Phase 7 section refers to: "revoking a root hash
- * kills every descendant for free, since every descendant token contains
- * block 0's signature."
- *
- * Signatures are not secret (unlike an attenuable token's proof field,
- * docs/PLAN.md 1.2) — hashing here is for a fixed-length, uniform key
- * shape, not for redaction.
+ * (docs/PLAN.md Phase 6.) Phase 7 landed the canonical definition in
+ * `@adc/core` itself (`blockSignatureHash()` — `verify()`'s own
+ * revocation check needs it internally, and `@adc/core` is the one
+ * package every other package in this stack already depends on, never
+ * the reverse — docs/PLAN.md section 2), so this is now a thin,
+ * intentional alias kept for this package's own already-public API
+ * (`blockIdentity` is what Phase 6's tests/README/consumers already
+ * name), delegating to that one real definition rather than
+ * recomputing it independently. Still sha256 of the raw 64-byte
+ * Ed25519 signature, hex-encoded, byte-for-byte identical output to
+ * before this delegation — see `@adc/core`'s own `revocation.ts` for
+ * the full rationale (fixed-length uniform key shape; signatures aren't
+ * secret, so hashing here is never about redaction).
  */
 export function blockIdentity(signature: Uint8Array): string {
-  return createHash("sha256").update(signature).digest("hex");
+  return blockSignatureHash(signature);
 }
 
 /** The exact shape `blockIdentity()` always produces: sha256 hex, lowercase,

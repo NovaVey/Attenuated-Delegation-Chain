@@ -13,6 +13,13 @@ caveat is actually backed by real grants. Everything else (`@adc/core`'s
 *because* minting specifically needs the root key and RBA access,
 per `docs/PLAN.md` section 0.
 
+Also the reference **signing and serving side of revocation**
+([`docs/PLAN.md`](../../docs/PLAN.md) Phase 7, `POST /revoke` and
+`GET /revocations` below): the root key that mints tokens is the same key
+that signs the revocation list, so this is the natural place to hold the
+revoked-hash store too, rather than standing up a separate service around
+the same secret.
+
 ## Why HTTP, not an imported library
 
 RBA is a separate, sibling service with no importable library surface —
@@ -88,6 +95,57 @@ against a relationship graph and pass through untouched.
 
 `200 { "status": "ok" }`, unauthenticated, no RBA call.
 
+### `POST /revoke` — [`docs/PLAN.md`](../../docs/PLAN.md) Phase 7
+
+Admin-authenticated (`Authorization: Bearer <MINT_ADMIN_API_KEY>`, checked
+with a length-then-`timingSafeEqual` comparison). Marks a block-signature
+hash — the same identity `@adc/core`'s `blockSignatureHash()` computes, sha256
+hex of a block's raw Ed25519 signature — as revoked. Revoking block 0's
+hash (the root signature every descendant token also carries) kills every
+token minted from that root, for free; that's the whole mechanism.
+
+```jsonc
+// Request
+{ "hash": "5b3f...<64 lowercase hex chars>" }
+
+// 200 — success (idempotent: revoking an already-revoked hash is a no-op, not an error)
+{ "revoked": "5b3f..." }
+
+// 401 — missing or wrong admin bearer token
+{ "error": { "code": "unauthorized", "message": "..." } }
+
+// 400 — malformed body or a hash that isn't 64 lowercase hex chars
+{ "error": { "code": "invalid_request", "message": "..." } }
+```
+
+Revoked hashes live in an **in-memory store, lost on restart** — see
+Known limitations below.
+
+### `GET /revocations` — [`docs/PLAN.md`](../../docs/PLAN.md) Phase 7
+
+Unauthenticated (the list contains only hashes, nothing sensitive —
+matching ordinary public CRL/OCSP-list practice). Builds and signs a
+*fresh* `@adc/revocation` `SignedRevocationList` from the current store
+contents on every request, using the same root secret key that mints
+tokens (no separate revocation-authority key or PKI — see
+`packages/adc-revocation`'s README for the tradeoff this implies).
+
+```jsonc
+// 200
+{
+  "payload": { "v": "adc-crl1", "issuedAt": 1780000000, "ttlSeconds": 60, "revoked": ["5b3f..."] },
+  "signature": "..."
+}
+```
+
+A verifier doesn't call this route directly in normal operation — it
+points `@adc/revocation`'s `createRevocationClient({ url: "<mint-base-url>/revocations", rootPublicKey })`
+at it, which polls, verifies the signature, and exposes a fail-closed
+`getRevokedHashes()` for `@adc/core`'s `verify()` to check against. See
+that package's README for the full liveness-bound writeup (the "150s
+worst case" number from Phase 7) and the client's caching/staleness
+behavior.
+
 ## Configuration
 
 | env var | required | meaning |
@@ -95,6 +153,7 @@ against a relationship graph and pass through untouched.
 | `MINT_ROOT_SECRET_KEY_B64` | yes | The root Ed25519 secret key, base64, must decode to exactly 32 bytes. **The single most sensitive value this service touches** — never logged, never echoed in an error message (see `src/config.ts`'s doc comment). |
 | `RBA_BASE_URL` | yes | e.g. `http://localhost:3000` for a local RBA instance. |
 | `RBA_API_KEY` | yes | A bearer key RBA accepts for its read routes (`READONLY_API_KEY` is sufficient — this service never writes to RBA). |
+| `MINT_ADMIN_API_KEY` | yes | Bearer token required on `POST /revoke`. A secret, but narrower blast radius than the root key: holding it lets someone revoke blocks, not mint or forge tokens. |
 | `PORT` | no (default `3001`) | |
 | `RBA_TIMEOUT_MS` | no (default `5000`) | Per-RBA-call timeout, covering the entire request including response body — not just until headers arrive. RBA is a synchronous dependency on the mint path; a hung call must not hang minting indefinitely. |
 
@@ -137,8 +196,18 @@ Postgres, no live network dependency for `npm test`:
   shaped to handle it, and before any RBA call), and that a rejected mint
   never produces a token.
 - `test/server.test.ts` — the real HTTP server end-to-end, status codes
-  and bodies for every outcome, oversized-body handling, unknown routes.
-- `test/config.test.ts` — env parsing and validation.
+  and bodies for every outcome, oversized-body handling, unknown routes;
+  also `POST /revoke`/`GET /revocations`: admin-auth success/failure
+  (including the length-mismatch path through the constant-time
+  comparison), idempotent revocation, malformed input, an injected
+  `RevocationStore` for pre-seeding, and a full end-to-end test that
+  mints a real token through this server, revokes its block-0 hash, and
+  confirms `@adc/core`'s `verify()` denies it with `ADC_REVOKED` using the
+  exact signed list this server served.
+- `test/revocation-store.test.ts` — the in-memory store on its own:
+  idempotent `revoke()`, hash-shape validation, `list()` contents.
+- `test/config.test.ts` — env parsing and validation, including the new
+  `MINT_ADMIN_API_KEY`.
 
 ## Known limitations
 
@@ -159,3 +228,16 @@ Postgres, no live network dependency for `npm test`:
   rejection is a Principal-Graph event once Phase 6 lands" — Phase 6
   (`packages/adc-graph`) doesn't exist yet, so a `scope_not_granted`
   rejection is only visible in the HTTP response, not emitted anywhere.
+- **Revoked hashes are in-memory only — lost on restart.** `src/revocation-store.ts`
+  is a plain `Set`; restarting this process un-revokes everything it held.
+  A real deployment backs this with persistent storage (a database, a
+  file, anything durable) behind the same `revoke()`/`list()` shape —
+  nothing in Phase 7's acceptance criteria (the signed-list format, the
+  offline check, the liveness bound) requires that yet.
+- **Revocation reuses the root key — no separate revocation-authority
+  key.** `POST /revoke`/`GET /revocations` sign with the same
+  `MINT_ROOT_SECRET_KEY_B64` that mints tokens. Verifiers already trust
+  that key, so no extra PKI is needed to bootstrap trust in the
+  revocation list — but it also means a compromised root key can suppress
+  its own revocations, same as it can mint anything. Documented, not
+  fixed; see `packages/adc-revocation`'s README for the fuller writeup.
