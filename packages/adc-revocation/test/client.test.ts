@@ -195,6 +195,98 @@ test("start() is idempotent: calling it twice doesn't start a second interval", 
   }
 });
 
+test("an out-of-safe-integer-range issuedAt in the response body reports via onError, never throws or crashes the process", async () => {
+  // Regression test for an adversarial-review finding: an issuedAt/
+  // ttlSeconds beyond Number.MAX_SAFE_INTEGER used to reach
+  // canonicalEncode() (via revocationSignInput, called BEFORE the
+  // signature check) and throw, uncaught, from this fire-and-forget
+  // poll() — an unauthenticated remote DoS, since no valid signature was
+  // needed to trigger it. Both the immediate cause (canonicalEncode's own
+  // input) and the source (parseShape's Number.isSafeInteger check) are
+  // covered elsewhere; this is the end-to-end path a hostile/compromised
+  // GET /revocations response would actually take.
+  const { rootPublicKey } = freshRoot();
+  const hostileBody = {
+    payload: { v: "adc-crl1", issuedAt: Number.MAX_SAFE_INTEGER + 2, ttlSeconds: 60, revoked: [] },
+    signature: "not-checked-before-the-crash-used-to-happen",
+  };
+  const { server, url } = await startMockServer(() => ({ status: 200, body: hostileBody }));
+  const errors: Error[] = [];
+
+  try {
+    const client = createRevocationClient({ url, rootPublicKey, onError: (err) => errors.push(err) });
+    await assert.doesNotReject(() => client.poll());
+    assert.equal(client.getRevokedHashes(), null);
+    assert.equal(errors.length, 1);
+  } finally {
+    server.close();
+  }
+});
+
+test("out-of-order polls: a slower, earlier-issued response that resolves AFTER a faster, later-issued one does not regress the cache", async () => {
+  // Regression test for an adversarial-review finding: two overlapping
+  // poll() calls (a slow response racing the next interval tick, or an
+  // explicit poll() racing start()'s own timer) can resolve out of order.
+  // Reproduced directly: an older list (not yet reflecting a revocation)
+  // that's slow to resolve used to silently overwrite a newer, already-
+  // cached list that DID reflect the revocation, once it finally landed.
+  const { rootSecretKey, rootPublicKey } = freshRoot();
+  const listA = signRevocationList(buildRevocationList([], { issuedAt: 1_000, ttlSeconds: 300 }), rootSecretKey); // older, nothing revoked
+  const listB = signRevocationList(buildRevocationList([HASH_A], { issuedAt: 1_010, ttlSeconds: 300 }), rootSecretKey); // newer, HASH_A revoked
+
+  let callCount = 0;
+  const fetchImpl: typeof fetch = async () => {
+    callCount++;
+    if (callCount === 1) {
+      // The first call (fetching the OLDER list) is slow.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      return new Response(JSON.stringify(listA), { status: 200 });
+    }
+    // The second call (fetching the NEWER list) is fast.
+    return new Response(JSON.stringify(listB), { status: 200 });
+  };
+
+  const client = createRevocationClient({ url: "http://unused.example/revocations", rootPublicKey, fetchImpl, now: () => 1_020 });
+
+  const p1 = client.poll(); // older list — starts first, resolves last
+  await new Promise((resolve) => setTimeout(resolve, 10)); // let p1's fetch actually start
+  const p2 = client.poll(); // newer list — starts second, resolves first
+
+  await p2;
+  assert.deepEqual([...client.getRevokedHashes()!], [HASH_A], "the newer, faster response is cached correctly");
+
+  await p1; // the slow, OLDER response lands last
+  assert.deepEqual(
+    [...client.getRevokedHashes()!],
+    [HASH_A],
+    "the stale, later-arriving-but-actually-older response must not regress the cache",
+  );
+});
+
+test("a hung response (server accepts the connection but never replies) times out via onError instead of hanging poll() forever", async () => {
+  const { rootPublicKey } = freshRoot();
+  // Deliberately never call res.end() / res.write() — simulates a
+  // slow-loris'd or simply unresponsive GET /revocations.
+  const server = createServer(() => {});
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("unexpected address");
+  const url = `http://127.0.0.1:${address.port}`;
+  const errors: Error[] = [];
+
+  try {
+    const client = createRevocationClient({ url, rootPublicKey, timeoutMs: 50, onError: (err) => errors.push(err) });
+    const start = Date.now();
+    await assert.doesNotReject(() => client.poll());
+    assert.ok(Date.now() - start < 2000, "poll() must not hang indefinitely on a stalled response");
+    assert.equal(client.getRevokedHashes(), null);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0]!.message, /timed out/);
+  } finally {
+    server.close();
+  }
+});
+
 test("a malformed (non-JSON) response body reports via onError, never throws", async () => {
   const { rootPublicKey } = freshRoot();
   const server = createServer((_req, res) => {

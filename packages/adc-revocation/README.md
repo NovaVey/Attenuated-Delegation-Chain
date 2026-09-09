@@ -197,6 +197,31 @@ rejects (`EXPIRED`) when either:
 - `now` is injectable (defaults to the real wall clock) for deterministic
   staleness tests, matching `@adc/core`'s own `Facts.now`/`VerifyOptions`
   testing convention.
+- Every `poll()` runs under one `AbortController`/timer (`timeoutMs`,
+  default 5000ms) covering the whole operation — connect through reading
+  the full response body, not just until headers arrive — matching
+  `services/mint/src/rba/client.ts`'s `HttpRbaClient`, the one other HTTP
+  client in this codebase. A hung or slow-loris'd `GET /revocations`
+  times out rather than hanging `poll()` (and, since `start()`'s interval
+  fires new polls regardless of whether a previous one is still
+  outstanding, potentially piling up unbounded concurrent hung requests)
+  forever.
+- Out-of-order responses can't regress the cache: two overlapping polls
+  (ordinary network jitter, no attacker needed — a slow response racing
+  the next interval tick, or an explicit `poll()` call racing `start()`'s
+  own timer) can resolve in either order. `poll()` refuses to let a
+  response whose `payload.issuedAt` is older than what's already cached
+  overwrite it, regardless of which one actually *settles* last — found
+  by adversarial review, reproduced with two concurrent polls where a
+  slower, earlier-issued response landed after a faster, newer one and
+  silently un-revoked an already-correctly-revoked hash.
+- `verifySignedRevocationList()`'s own "never throws on untrusted input"
+  contract is backstopped here too: `poll()`'s try/catch covers the fetch,
+  the JSON parse, *and* the verify call, so a future regression in the
+  verification path degrades to a reported `onError()`, never an
+  unhandled rejection in this fire-and-forget call (both `start()`'s
+  initial call and its interval invoke `poll()` as `void poll()` — nothing
+  else is positioned to catch a throw here).
 
 ## Testing strategy
 
@@ -216,7 +241,13 @@ crypto:
   treated as extra-fresh, alongside a mildly future one (ordinary drift)
   still accepted; an exhaustive list of malformed/null/wrong-typed input
   shapes all denying `MALFORMED` rather than throwing; unexpected extra
-  fields ignored, not rejected (forward-compatible).
+  fields ignored, not rejected (forward-compatible); an `issuedAt`/
+  `ttlSeconds` beyond `Number.MAX_SAFE_INTEGER` (or `Infinity`/`NaN`)
+  denying `MALFORMED` rather than reaching `canonicalEncode()` and
+  throwing (a regression test for an adversarial-review finding — see
+  below); `revocationSignInput()`/`signRevocationList()` rejecting a
+  non-string entry in `payload.revoked` on a hand-built payload that
+  bypasses `buildRevocationList()`'s own validation.
 - `test/client.test.ts` — against a real local `node:http` mock server
   (matching `services/mint/test/rbaClient.test.ts`'s established pattern):
   fetch→verify→cache on a real signed list; network errors, non-2xx, a
@@ -227,7 +258,27 @@ crypto:
   clock (no real waiting); `start()`/`stop()` lifecycle (immediate poll on
   start, the interval firing again, no further polls after stop) and
   `start()`'s idempotency, using short real timers since this specific
-  behavior is about real interval scheduling.
+  behavior is about real interval scheduling; a hung response (a server
+  that accepts the connection and never replies) timing out via `onError`
+  rather than hanging `poll()` forever; an out-of-safe-integer-range
+  `issuedAt` in the response body reporting via `onError` rather than
+  crashing the process (the end-to-end path a hostile/compromised
+  `GET /revocations` response would actually take); two overlapping polls
+  resolving out of order, confirming the slower, earlier-issued response
+  does not regress a cache already holding the faster, newer one's data.
+
+  The last three are regression tests for three real findings from an
+  adversarial review of this package's first implementation: (1) an
+  out-of-safe-integer-range `issuedAt`/`ttlSeconds` could crash any
+  verifier polling a hostile or compromised `GET /revocations` endpoint,
+  with no valid signature required (fixed in `verify.ts`'s `parseShape()`
+  and backstopped by a catch-all in `verifySignedRevocationList()`
+  itself); (2) two overlapping polls could resolve out of order and
+  silently regress the cache to older, less-revoked data (fixed by the
+  `payload.issuedAt` monotonicity guard in `client.ts`); (3) `poll()` had
+  no timeout, so a hung or slow-loris'd endpoint could hang it
+  indefinitely (fixed by the `timeoutMs` `AbortController`, matching
+  `HttpRbaClient`'s established pattern).
 
 See `packages/adc-core/test/revocation.test.ts` for the paired coverage of
 the actual offline check inside `verify()` (revoking block 0 denies every

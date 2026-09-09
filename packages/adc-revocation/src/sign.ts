@@ -22,6 +22,20 @@ const DOMAIN_TAG = new TextEncoder().encode("adc-crl1\0");
  * "verify over the bytes you can derive yourself" discipline
  * docs/PLAN.md 1.4 requires for block signatures. */
 export function revocationSignInput(payload: RevocationListPayload): Uint8Array {
+  // This function is public, directly-importable API — buildRevocationList()
+  // is the only real caller in this codebase and already validates every
+  // entry, but that's a property of the current call graph, not a runtime
+  // guarantee this function can rely on. A non-string entry would
+  // otherwise reach canonicalEncode() (whose CanonicalValue union accepts
+  // it) and get silently signed as part of a well-formed-looking but
+  // semantically-wrong list.
+  const revoked = [...payload.revoked];
+  for (const hash of revoked) {
+    if (typeof hash !== "string") {
+      throw new TypeError(`revocation list payload.revoked must contain only strings, got ${typeof hash}`);
+    }
+  }
+
   // Re-typed as a fresh, plain CanonicalValue object rather than passing
   // `payload` directly: `RevocationListPayload` is a specific interface,
   // not a `{[key: string]: CanonicalValue}` index signature, and only
@@ -32,7 +46,7 @@ export function revocationSignInput(payload: RevocationListPayload): Uint8Array 
     v: payload.v,
     issuedAt: payload.issuedAt,
     ttlSeconds: payload.ttlSeconds,
-    revoked: [...payload.revoked],
+    revoked,
   };
   const body = canonicalEncode(canonicalPayload);
   const out = new Uint8Array(DOMAIN_TAG.length + body.length);

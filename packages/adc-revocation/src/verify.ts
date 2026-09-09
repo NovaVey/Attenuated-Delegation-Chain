@@ -51,11 +51,19 @@ function parseShape(raw: unknown): { list: SignedRevocationList; reason?: string
   if (p.v !== REVOCATION_LIST_VERSION) {
     return { reason: `'payload.v' must be ${JSON.stringify(REVOCATION_LIST_VERSION)}, got ${JSON.stringify(p.v)}` };
   }
-  if (typeof p.issuedAt !== "number" || !Number.isInteger(p.issuedAt) || p.issuedAt < 0) {
-    return { reason: "'payload.issuedAt' must be a non-negative integer" };
+  // Number.isSafeInteger, not just Number.isInteger: an out-of-safe-range
+  // integer (e.g. 2**53) still passes Number.isInteger, but canonicalEncode()
+  // (called below, via revocationSignInput, BEFORE the signature is even
+  // checked) throws a RangeError on one — found by adversarial review as an
+  // unauthenticated crash: any HTTP response body with an out-of-range
+  // issuedAt/ttlSeconds, no valid signature required, could kill a
+  // verifier's process. Reject it here, structurally, before it ever
+  // reaches canonical encoding.
+  if (typeof p.issuedAt !== "number" || !Number.isSafeInteger(p.issuedAt) || p.issuedAt < 0) {
+    return { reason: "'payload.issuedAt' must be a non-negative safe integer" };
   }
-  if (typeof p.ttlSeconds !== "number" || !Number.isInteger(p.ttlSeconds) || p.ttlSeconds <= 0) {
-    return { reason: "'payload.ttlSeconds' must be a positive integer" };
+  if (typeof p.ttlSeconds !== "number" || !Number.isSafeInteger(p.ttlSeconds) || p.ttlSeconds <= 0) {
+    return { reason: "'payload.ttlSeconds' must be a positive safe integer" };
   }
   if (!Array.isArray(p.revoked) || !p.revoked.every((h) => typeof h === "string" && BLOCK_HASH_PATTERN.test(h))) {
     return { reason: "'payload.revoked' must be an array of 64-character lowercase hex sha256 hashes" };
@@ -84,42 +92,55 @@ function parseShape(raw: unknown): { list: SignedRevocationList; reason?: string
  * staleness is checked, not just tamper-evidence.
  */
 export function verifySignedRevocationList(raw: unknown, rootPublicKey: Uint8Array, opts: VerifyListOptions = {}): VerifyListResult {
-  const shape = parseShape(raw);
-  if (!shape.list) {
-    return deny("MALFORMED", shape.reason);
-  }
-  const list = shape.list;
-
-  let signatureBytes: Uint8Array;
+  // The whole body is wrapped, not just the individually-guarded steps
+  // below: this function's contract (and its callers', especially
+  // client.ts's poll(), which calls this on a raw HTTP response with no
+  // try/catch of its own) is "never throws on untrusted input." parseShape()
+  // already rejects the one concrete way this used to be violated (an
+  // out-of-safe-integer-range issuedAt/ttlSeconds reaching canonicalEncode()
+  // and throwing before the signature check) — this catch-all is
+  // structural insurance against that class of bug recurring, not a
+  // substitute for validating at the source.
   try {
-    signatureBytes = b64urlDecode(list.signature);
-  } catch {
-    return deny("MALFORMED", "'signature' is not valid base64url");
-  }
+    const shape = parseShape(raw);
+    if (!shape.list) {
+      return deny("MALFORMED", shape.reason);
+    }
+    const list = shape.list;
 
-  if (!verifySignature(rootPublicKey, revocationSignInput(list.payload), signatureBytes)) {
-    return deny("BAD_SIGNATURE", "revocation list signature does not verify under the given root public key");
-  }
+    let signatureBytes: Uint8Array;
+    try {
+      signatureBytes = b64urlDecode(list.signature);
+    } catch {
+      return deny("MALFORMED", "'signature' is not valid base64url");
+    }
 
-  const now = opts.now ?? Math.floor(Date.now() / 1000);
-  const clockSkewSeconds = opts.clockSkewSeconds ?? 60;
+    if (!verifySignature(rootPublicKey, revocationSignInput(list.payload), signatureBytes)) {
+      return deny("BAD_SIGNATURE", "revocation list signature does not verify under the given root public key");
+    }
 
-  // A future-dated issuedAt would make this list look artificially
-  // *fresher* than it is (inflating the "now <= issuedAt + ttl" check
-  // below) — reject it the same way, not just past-expiry. Only the
-  // legitimate root-key holder can produce a validly-signed list at all
-  // (the signature check above already establishes that), so this is
-  // defense against the SIGNER's own clock being wrong, not an external
-  // forgery — see this package's README.
-  if (now < list.payload.issuedAt - clockSkewSeconds) {
-    return deny("EXPIRED", `revocation list is dated in the future: issuedAt ${list.payload.issuedAt}, now ${now}`);
-  }
-  if (now > list.payload.issuedAt + list.payload.ttlSeconds + clockSkewSeconds) {
-    return deny(
-      "EXPIRED",
-      `revocation list is stale: issued ${list.payload.issuedAt}, ttl ${list.payload.ttlSeconds}s, now ${now}`,
-    );
-  }
+    const now = opts.now ?? Math.floor(Date.now() / 1000);
+    const clockSkewSeconds = opts.clockSkewSeconds ?? 60;
 
-  return { ok: true, payload: list.payload, revokedHashes: new Set(list.payload.revoked) };
+    // A future-dated issuedAt would make this list look artificially
+    // *fresher* than it is (inflating the "now <= issuedAt + ttl" check
+    // below) — reject it the same way, not just past-expiry. Only the
+    // legitimate root-key holder can produce a validly-signed list at all
+    // (the signature check above already establishes that), so this is
+    // defense against the SIGNER's own clock being wrong, not an external
+    // forgery — see this package's README.
+    if (now < list.payload.issuedAt - clockSkewSeconds) {
+      return deny("EXPIRED", `revocation list is dated in the future: issuedAt ${list.payload.issuedAt}, now ${now}`);
+    }
+    if (now > list.payload.issuedAt + list.payload.ttlSeconds + clockSkewSeconds) {
+      return deny(
+        "EXPIRED",
+        `revocation list is stale: issued ${list.payload.issuedAt}, ttl ${list.payload.ttlSeconds}s, now ${now}`,
+      );
+    }
+
+    return { ok: true, payload: list.payload, revokedHashes: new Set(list.payload.revoked) };
+  } catch (err) {
+    return deny("MALFORMED", `revocation list could not be verified: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }

@@ -204,10 +204,13 @@ function deny(code: ReasonCode, reason: string): VerifyResult {
 }
 
 /**
- * Verifies a token's signature chain, proof, and caveats against
- * `rootPublicKey` and the supplied `facts` (docs/PLAN.md 1.6 steps 1-3
- * and 5). Step 4 (revocation, Phase 7) is not implemented yet and is
- * silently skipped — an Allow says nothing about revocation.
+ * Verifies a token's signature chain, proof, revocation status, and
+ * caveats against `rootPublicKey` and the supplied `facts` (docs/PLAN.md
+ * 1.6 steps 1-5). Step 4 (revocation) only runs when `opts.revokedHashes`
+ * is supplied — see `VerifyOptions.revokedHashes`'s own doc comment above;
+ * an Allow with no `revokedHashes` opted in says nothing about revocation,
+ * exactly like an Allow with no `facts` supplied says nothing about a
+ * caveat kind that was never evaluated.
  *
  * Deny by default: a caveat whose kind isn't recognized, or whose
  * required fact wasn't supplied, denies rather than passing — see

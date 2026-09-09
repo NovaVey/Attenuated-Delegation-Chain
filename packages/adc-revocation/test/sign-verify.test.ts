@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeypair } from "@adc/core";
-import { buildRevocationList, REVOCATION_LIST_VERSION } from "../src/list.js";
-import { signRevocationList } from "../src/sign.js";
+import { buildRevocationList, REVOCATION_LIST_VERSION, type RevocationListPayload } from "../src/list.js";
+import { signRevocationList, revocationSignInput } from "../src/sign.js";
 import { verifySignedRevocationList } from "../src/verify.js";
 
 const HASH_A = "a".repeat(64);
@@ -175,6 +175,57 @@ test("missing/wrong-typed fields deny MALFORMED, never throw", () => {
     assert.equal(result.ok, false, `expected denial for ${JSON.stringify(bad)}`);
     assert.equal((result as { code: string }).code, "MALFORMED", `expected MALFORMED for ${JSON.stringify(bad)}`);
   }
+});
+
+test("an issuedAt/ttlSeconds beyond Number.MAX_SAFE_INTEGER denies MALFORMED rather than reaching canonicalEncode() and throwing", () => {
+  // Regression test for an adversarial-review finding: Number.isInteger()
+  // alone (not Number.isSafeInteger()) let an out-of-safe-range value
+  // through parseShape(), reaching canonicalEncode() (via
+  // revocationSignInput, called BEFORE the signature is even checked) and
+  // throwing a RangeError there — an unauthenticated crash, since no
+  // valid signature was needed to trigger it: any response body shape
+  // alone was enough. No real signer would ever produce such a value
+  // (buildRevocationList()'s own isSafePositiveInt() already prevents
+  // it), so this is purely about untrusted wire input.
+  const { rootPublicKey } = freshRoot();
+  const unsafeValues = [Number.MAX_SAFE_INTEGER + 1, Number.MAX_SAFE_INTEGER + 2, 2 ** 60, Infinity, NaN];
+  for (const unsafe of unsafeValues) {
+    const badIssuedAt = {
+      payload: { v: REVOCATION_LIST_VERSION, issuedAt: unsafe, ttlSeconds: 60, revoked: [] },
+      signature: "irrelevant-should-never-be-checked",
+    };
+    const r1 = verifySignedRevocationList(badIssuedAt, rootPublicKey);
+    assert.equal(r1.ok, false, `expected denial for issuedAt=${unsafe}`);
+    assert.equal((r1 as { code: string }).code, "MALFORMED", `expected MALFORMED for issuedAt=${unsafe}`);
+
+    const badTtl = {
+      payload: { v: REVOCATION_LIST_VERSION, issuedAt: 1000, ttlSeconds: unsafe, revoked: [] },
+      signature: "irrelevant-should-never-be-checked",
+    };
+    const r2 = verifySignedRevocationList(badTtl, rootPublicKey);
+    assert.equal(r2.ok, false, `expected denial for ttlSeconds=${unsafe}`);
+    assert.equal((r2 as { code: string }).code, "MALFORMED", `expected MALFORMED for ttlSeconds=${unsafe}`);
+  }
+});
+
+test("revocationSignInput()/signRevocationList() reject a non-string entry in payload.revoked rather than silently signing it", () => {
+  // Defense-in-depth: buildRevocationList() is the only real caller in
+  // this codebase and already validates every entry, but revocationSignInput
+  // and signRevocationList are public API of their own — a hand-built
+  // RevocationListPayload (bypassing buildRevocationList) with a non-string
+  // entry would otherwise be accepted by canonicalEncode()'s CanonicalValue
+  // union and get silently signed as part of a well-formed-looking but
+  // semantically-wrong list.
+  const { secretKey } = generateKeypair();
+  const malformedPayload = {
+    v: REVOCATION_LIST_VERSION,
+    issuedAt: 1000,
+    ttlSeconds: 60,
+    revoked: ["a".repeat(64), 12345],
+  } as unknown as RevocationListPayload;
+
+  assert.throws(() => revocationSignInput(malformedPayload), TypeError);
+  assert.throws(() => signRevocationList(malformedPayload, secretKey), TypeError);
 });
 
 test("extra, unexpected top-level or payload fields are ignored, not rejected (forward-compatible, matching signing's own field allowlist)", () => {
