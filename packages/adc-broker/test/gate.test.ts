@@ -34,6 +34,19 @@ function sourceTool(): ToolExecutor<Record<string, never>, { text: string }> {
   };
 }
 
+function emailTool(): ToolExecutor<{ to: string }, { sent: true }> & { calls: number } {
+  const tool = {
+    name: "send_email",
+    capabilities: { capabilities: ["net:email"] as SinkCapability[] },
+    calls: 0,
+    async execute() {
+      tool.calls++;
+      return { sent: true as const };
+    },
+  };
+  return tool;
+}
+
 test("ADC deny happens BEFORE the taint gate: broker.call() is never reached, no AuditEvent is produced", async () => {
   const events: AuditEvent[] = [];
   const broker = createBroker({ auditSink: { record: (e) => events.push(e) } });
@@ -78,6 +91,23 @@ test("both ADC and the taint gate pass: the real tool executes and returns its r
   const result = await wrapped.execute({ cmd: "ls" });
 
   assert.deepEqual(result, { ran: true });
+  assert.equal(tool.calls, 1);
+});
+
+test("regression: an EXFIL-class tool call (host fact derived + sink fact) with an ordinary sinks caveat is allowed, not wrongly denied", async () => {
+  // End-to-end coverage for the critical cross-product bug found in review
+  // (see verify.test.ts's own regression tests for the unit-level case):
+  // an EXFIL tool call detects a host in its args, so BOTH factSets.sinks
+  // and factSets.hosts are non-empty here — exactly the case the old
+  // sink-only/host-only decomposition got wrong.
+  const broker = createBroker();
+  const tool = emailTool();
+  const { token, publicKey } = mintToken([{ kind: "sinks", classes: ["net:email"] }]);
+  const wrapped = wrapWithAdcGate(broker, tool, { rootPublicKey: publicKey, getToken: () => token });
+
+  const result = await wrapped.execute({ to: "alice@example.com" });
+
+  assert.deepEqual(result, { sent: true });
   assert.equal(tool.calls, 1);
 });
 
@@ -142,15 +172,21 @@ test("live taint level flows into the ADC check: a taint_max caveat below the cu
 
 test("registers the tool with the broker exactly once (via broker.wrap at wrap-time), not per call", async () => {
   const broker = createBroker();
+  let wrapCalls = 0;
+  const realWrap = broker.wrap.bind(broker);
+  broker.wrap = ((executor) => {
+    wrapCalls++;
+    return realWrap(executor);
+  }) as typeof broker.wrap;
+
   const tool = execTool();
   const { token, publicKey } = mintToken([{ kind: "sinks", classes: ["exec:shell"] }]);
   const wrapped = wrapWithAdcGate(broker, tool, { rootPublicKey: publicKey, getToken: () => token });
+  assert.equal(wrapCalls, 1, "broker.wrap() must run at wrap time");
 
   await wrapped.execute({ cmd: "one" });
   await wrapped.execute({ cmd: "two" });
 
-  // Re-registering the same tool name would throw in taint-tracked-tool-
-  // broker (duplicate registration) — two successful calls above prove
-  // broker.wrap() ran once at wrap time, not inside execute().
+  assert.equal(wrapCalls, 1, "broker.wrap() must NOT run again per call");
   assert.equal(tool.calls, 2);
 });

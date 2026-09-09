@@ -74,11 +74,19 @@ concept of "which RBA resource this call concerns." A tool that needs
 `@adc/core`'s `verify()`.
 
 A `sinks`/`hosts` caveat is checked against **every** declared capability /
-detected host independently — not a merged or best-case fact — since
-`@adc/core`'s `Facts` only holds one `sink`/`host` value at a time and each
-caveat kind only reads its own fact. See `verify.ts`'s doc comment for why
-this is exactly equivalent to evaluating the true, possibly multi-valued
-fact set a call could exercise.
+detected host — since `@adc/core`'s `Facts` only holds one `sink`/`host`
+value at a time, `verifyCall()` evaluates the token once per `(sink, host)`
+pair (the cross product, when both are non-empty — e.g. an EXFIL call with
+two declared capabilities and one detected host is checked twice, not
+once), requiring every pairing to independently pass. A single-axis
+decomposition (verify sinks and hosts as two separate lists) looks
+equivalent — each caveat kind only ever reads its own fact — but isn't:
+`@adc/core`'s `evaluateCaveat` fails closed when a caveat's own fact is
+simply absent, so a host-only fact-set with no `sink` at all would make
+any token's ordinary `sinks` caveat deny outright, regardless of whether
+the sink itself was actually permitted. See `verify.ts`'s doc comment for
+the full reasoning (and its regression tests for the exact failure mode
+this closes).
 
 ## NONE-sinkClass tools are never ADC-gated
 
@@ -134,14 +142,22 @@ are never `instanceof` one another.
   narrowing, and that a non-EXFIL tool never triggers host detection even
   when its args happen to contain a URL-looking string.
 - `test/verify.test.ts` — the multi-variation fail-closed verification
-  logic, against real minted tokens.
+  logic against real minted tokens, including regression coverage for the
+  sink×host cross-product bug caught in review (see "Fact derivation"
+  above): a real EXFIL call (both axes non-empty) must not be wrongly
+  denied by an ordinary `sinks` caveat.
 - `test/gate.test.ts` — the end-to-end wrapper: verification-before-the-gate,
-  missing-token handling, both-pass execution, ADC-pass/gate-deny, the
-  distinct error classes, and NONE-sinkClass bypass.
+  missing-token handling, both-pass execution (an EXEC tool and, separately,
+  an EXFIL tool exercising the same cross-product path end-to-end),
+  ADC-pass/gate-deny, the distinct error classes, and NONE-sinkClass bypass.
 - `test/redact.test.ts` — token redaction, including a real
   `createBroker({ redactAuditArgs: createAdcAuditRedactor() })` round trip
   asserting the raw token string never appears anywhere in a recorded
-  `AuditEvent`.
+  `AuditEvent`; `Map`/`Set` entries (keys and values) are walked and
+  redacted rather than silently erased; a circular args object (legitimate
+  under the broker's default `structuredClone` `cloneArgs`) is redacted
+  without hanging, and its cyclic back-reference resolves to the redacted
+  copy, never back to the original object carrying the raw token.
 
 ## Running
 

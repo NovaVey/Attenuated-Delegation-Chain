@@ -38,6 +38,53 @@ test("leaves ordinary strings, numbers, booleans, null untouched", () => {
   assert.deepEqual(redactAdcTokens(input), input);
 });
 
+test("regression: a Map's entries (keys and values) are walked and redacted, not silently erased into {}", () => {
+  // Map/Set hold entries in an internal slot, not an own-enumerable
+  // property — Object.entries() sees nothing, so the generic plain-object
+  // branch used to silently flatten a Map into {}, destroying non-token
+  // data sitting alongside a token in the same Map. The broker's default
+  // cloneArgs is structuredClone, which preserves Map/Set intact, so a
+  // real tool's args snapshot can legitimately carry one.
+  const token = mintToken();
+  const input = { headers: new Map<string, string>([["Authorization", `Bearer ${token}`], ["X-Trace", "abc123"]]) };
+  const redacted = redactAdcTokens(input);
+  assert.ok(redacted.headers instanceof Map, "must still be a Map, not flattened into a plain object");
+  assert.equal(redacted.headers.get("Authorization"), "Bearer [redacted:adc-token]");
+  assert.equal(redacted.headers.get("X-Trace"), "abc123", "non-token entries in the same Map must survive");
+});
+
+test("regression: a Map key that is itself a token is redacted too, not just values", () => {
+  const token = mintToken();
+  const input = new Map<string, string>([[token, "some value"]]);
+  const redacted = redactAdcTokens(input);
+  assert.equal(redacted.has(token), false);
+  assert.equal(redacted.get("[redacted:adc-token]"), "some value");
+});
+
+test("regression: a Set's values are walked and redacted, not silently erased into {}", () => {
+  const token = mintToken();
+  const input = { tags: new Set([token, "unrelated"]) };
+  const redacted = redactAdcTokens(input);
+  assert.ok(redacted.tags instanceof Set);
+  assert.deepEqual([...redacted.tags], ["[redacted:adc-token]", "unrelated"]);
+});
+
+test("a Date is passed through unchanged, not flattened into {} (it can never hold a string token anyway)", () => {
+  const input = { at: new Date(1_700_000_000_000) };
+  const redacted = redactAdcTokens(input);
+  assert.ok(redacted.at instanceof Date);
+  assert.equal(redacted.at.getTime(), 1_700_000_000_000);
+});
+
+test("guards against a circular object instead of hanging forever (structuredClone, the broker's default cloneArgs, supports circular refs)", () => {
+  const token = mintToken();
+  const circular: { self?: unknown; secret: string } = { secret: token };
+  circular.self = circular;
+  const redacted = redactAdcTokens(circular);
+  assert.equal(redacted.secret, "[redacted:adc-token]");
+  assert.equal(redacted.self, redacted, "the cycle itself is preserved, not infinitely unrolled");
+});
+
 test("regression: a token whose last base64url character is '-' is redacted in full, no stray trailing character left behind", () => {
   // Base64url's alphabet includes "-" and "_", which are NOT \w characters
   // in JS regex — a naive \b-bounded pattern fails to match right at a

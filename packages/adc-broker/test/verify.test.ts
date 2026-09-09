@@ -55,6 +55,53 @@ test("a hosts caveat permitting every detected host: allow", () => {
   assert.equal(result.ok, true);
 });
 
+test("regression: a real EXFIL call (both sinks and hosts non-empty) is NOT denied by a sinks-only caveat just because a host fact is also in play", () => {
+  // This is the critical bug found in review before this shipped: variations
+  // used to be built as two SEPARATE lists (one sink-only, one host-only)
+  // instead of a cross product. A host-only variation always left `sink`
+  // undefined, which made ANY token with an ordinary `sinks` caveat deny
+  // every EXFIL call outright — even with no `hosts` caveat present at all,
+  // and even though the sink itself was exactly permitted.
+  const { token, publicKey } = mint([{ kind: "sinks", classes: ["net:email"] }]);
+  const result = verifyCall(token, publicKey, factSets({ sinks: ["net:email"], hosts: ["mail.example.com"] }));
+  assert.equal(result.ok, true);
+});
+
+test("regression: the cross product still fails closed when the sink is permitted but the host isn't", () => {
+  const { token, publicKey } = mint([
+    { kind: "sinks", classes: ["net:email"] },
+    { kind: "hosts", hostnames: ["good.example.com"] },
+  ]);
+  const result = verifyCall(token, publicKey, factSets({ sinks: ["net:email"], hosts: ["bad.example.com"] }));
+  assert.equal(result.ok, false);
+  if (result.ok) throw new Error("unreachable");
+  assert.equal(result.code, "ADC_HOST");
+});
+
+test("regression: the cross product still fails closed when the host is permitted but the sink isn't", () => {
+  const { token, publicKey } = mint([
+    { kind: "sinks", classes: ["net:api-call"] },
+    { kind: "hosts", hostnames: ["good.example.com"] },
+  ]);
+  const result = verifyCall(token, publicKey, factSets({ sinks: ["net:email"], hosts: ["good.example.com"] }));
+  assert.equal(result.ok, false);
+  if (result.ok) throw new Error("unreachable");
+  assert.equal(result.code, "ADC_SINK");
+});
+
+test("cross product covers every (sink, host) pairing: two sinks x two hosts, all four must be permitted", () => {
+  const { token, publicKey } = mint([
+    { kind: "sinks", classes: ["net:email", "net:api-call"] },
+    { kind: "hosts", hostnames: ["a.example.com", "b.example.com"] },
+  ]);
+  const allowed = verifyCall(
+    token,
+    publicKey,
+    factSets({ sinks: ["net:email", "net:api-call"], hosts: ["a.example.com", "b.example.com"] }),
+  );
+  assert.equal(allowed.ok, true);
+});
+
 test("taint_max ceiling respected via base facts, independent of sinks/hosts variations", () => {
   const { token, publicKey } = mint([{ kind: "taint_max", level: "DERIVED" }, { kind: "sinks", classes: ["exec:shell"] }]);
   const allowed = verifyCall(
