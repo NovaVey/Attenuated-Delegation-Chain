@@ -17,16 +17,22 @@ See [`docs/PLAN.md`](docs/PLAN.md) for the full design and phased build plan.
   (150 chains × 20 queries, 0 false grants — see that package's README for
   the full published line), plus property tests for Claims 2 (monotone
   decrease) and 3 (non-removability).
-- No revocation or RBA/broker/Principal-Graph integration yet — see the
-  packages' READMEs for exact scope and security notes.
-- Phases 4-7 (RBA mint bounding, the broker adapter, Principal-Graph
-  events, revocation) are not implemented.
+- **Phase 4 — done.** [`services/mint`](services/mint): the HTTP mint
+  service. Holds the root key; consults [NovaVey/Relationship-Based-Authorization](https://github.com/NovaVey/Relationship-Based-Authorization)'s
+  scope-bounding query (`POST /scope`/`POST /check`) before minting a root
+  token, and rejects the whole mint — never silently trims — if a
+  requested `scope` grant isn't actually held.
+- No revocation or broker/Principal-Graph integration yet — see the
+  packages'/service's READMEs for exact scope and security notes.
+- Phases 5-7 (the broker adapter, Principal-Graph events, revocation) are
+  not implemented.
 
 ## Packages
 
 ```
 packages/adc-core      format, sign, attenuate, seal, verify, caveats (Phases 1-2)
 packages/adc-testkit   reference evaluator, generators, differential fuzzer (Phase 3, dev-only)
+services/mint           HTTP mint service: holds the root key, RBA scope bounding (Phase 4)
 ```
 
 ```
