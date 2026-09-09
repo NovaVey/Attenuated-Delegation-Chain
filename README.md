@@ -29,9 +29,17 @@ See [`docs/PLAN.md`](docs/PLAN.md) for the full design and phased build plan.
   destination host, the live taint watermark, the current time) — strictly
   before the call ever reaches the broker's own taint gate; a
   `createAdcAuditRedactor()` helper wires the token out of the audit trail.
-- No Principal-Graph integration or revocation yet — see the
-  packages'/service's READMEs for exact scope and security notes.
-- Phases 6-7 (Principal-Graph events, revocation) are not implemented.
+- **Phase 6 — done.** [`packages/adc-graph`](packages/adc-graph):
+  [Principal-Graph](https://github.com/NovaVey/Principal-Graph) event
+  emitters for mint/attenuate/seal/verify-allow/verify-deny/revoke.
+  Principal-Graph has no write API or importable library surface, so this
+  package builds plain, correctly-shaped event data — event identity is
+  the sha256 of each block's Ed25519 signature, the same value Phase 7's
+  revocation list will reuse — for a Principal-Graph-side adapter to
+  consume; see that package's README for the worked reference adapter.
+- No revocation yet — see the packages'/service's READMEs for exact scope
+  and security notes.
+- Phase 7 (revocation) is not implemented.
 
 ## Packages
 
@@ -40,6 +48,7 @@ packages/adc-core      format, sign, attenuate, seal, verify, caveats (Phases 1-
 packages/adc-testkit   reference evaluator, generators, differential fuzzer (Phase 3, dev-only)
 services/mint           HTTP mint service: holds the root key, RBA scope bounding (Phase 4)
 packages/adc-broker     Taint-Tracked-Tool-Broker adapter: verify-before-the-gate, facts, redaction (Phase 5)
+packages/adc-graph      Principal-Graph event emitters: per-block-signature-hash identity (Phase 6)
 ```
 
 ```
