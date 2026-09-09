@@ -230,8 +230,9 @@ interface RevokeOpts extends CommonOpts {
 /**
  * Builds a 'revoke' event for the block whose signature hash is
  * `blockSignatureHash` — the same identity `blockIdentity()` (hash.ts)
- * computes, and the value docs/PLAN.md's own Phase 7 (not yet built) will
- * use as its revocation-list lookup key. Takes the hash directly, not a
+ * computes (a thin delegating alias to `@adc/core`'s own canonical
+ * `blockSignatureHash()`, Phase 7's revocation-list lookup key — see
+ * hash.ts's own doc comment). Takes the hash directly, not a
  * `ParsedToken`, since a revocation is keyed by hash alone — the operator
  * revoking a credential may never hold the token itself (e.g. revoking a
  * lost/compromised root from an out-of-band report of its known hash).

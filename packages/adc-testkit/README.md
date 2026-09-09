@@ -103,8 +103,13 @@ budget. Bump `CHAINS_PER_RUN`/`QUERIES_PER_CHAIN` in
   sanity check that guards against a genuinely broken test is that the
   pristine token is never *structurally* denied (`ADC_MALFORMED`,
   `ADC_SIG_INVALID`, `ADC_PROOF_INVALID`).
-- **Claim 4 (revocation liveness)** is Phase 7 — not yet implemented, out
-  of scope here.
+- **Claim 4 (revocation liveness)** is Phase 7 (`packages/adc-revocation`,
+  `@adc/core`'s `verify()` `revokedHashes` option) — out of scope for this
+  package specifically, since it's a freshness/liveness property of a
+  signed list and a polling client, not a caveat-evaluation-over-a-finite-
+  universe property this reference evaluator/differential fuzzer is built
+  to check. See that package's README for its own test coverage and the
+  liveness-bound number.
 
 ## Running
 
