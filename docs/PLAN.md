@@ -1,6 +1,6 @@
 # Attenuated-Delegation-Chain — Build Plan
 
-Status: Phases 1-4 implemented (`packages/adc-core`, `packages/adc-testkit`, `services/mint`). Phases 5-7 not yet implemented.
+Status: Phases 1-5 implemented (`packages/adc-core`, `packages/adc-testkit`, `services/mint`, `packages/adc-broker`). Phases 6-7 not yet implemented.
 
 ## 0. What this is
 

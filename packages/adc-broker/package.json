@@ -1,0 +1,34 @@
+{
+  "name": "@adc/broker",
+  "version": "0.1.0",
+  "description": "Broker adapter: verifies an ADC token before the taint gate and injects sink/host/taint/time facts from Taint-Tracked-Tool-Broker state. See docs/PLAN.md Phase 5.",
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "prebuild": "npm run build -w @adc/core --if-present",
+    "build": "tsc -p tsconfig.json",
+    "pretest": "npm run build",
+    "test": "node --test dist/test/*.test.js",
+    "pretypecheck": "npm run build -w @adc/core --if-present",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@adc/core": "*",
+    "taint-tracked-tool-broker": "^1.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "license": "MIT"
+}
