@@ -225,9 +225,11 @@ Postgres, no live network dependency for `npm test`:
   address (not called for in `docs/PLAN.md`'s Phase 4 either). A real
   deployment sits this behind its own network boundary/auth layer.
 - **No Principal-Graph event on rejection.** `docs/PLAN.md`: "the
-  rejection is a Principal-Graph event once Phase 6 lands" — Phase 6
-  (`packages/adc-graph`) doesn't exist yet, so a `scope_not_granted`
-  rejection is only visible in the HTTP response, not emitted anywhere.
+  rejection is a Principal-Graph event once Phase 6 lands" — `packages/adc-graph`
+  (Phase 6) exists now, but this service doesn't call it: a `scope_not_granted`
+  rejection is only visible in the HTTP response, not emitted as a
+  Principal-Graph event. Wiring that in is future work, not required by
+  Phase 4's acceptance criteria.
 - **Revoked hashes are in-memory only — lost on restart.** `src/revocation-store.ts`
   is a plain `Set`; restarting this process un-revokes everything it held.
   A real deployment backs this with persistent storage (a database, a

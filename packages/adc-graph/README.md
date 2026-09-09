@@ -84,7 +84,7 @@ shape, not redaction.
 | `attenuate` | the newly-appended block (`token.sigs[sigs.length-1]`) | caller-supplied `actor` | attenuation only requires holding the current proof secret, which carries no durable identity of its own (`docs/PLAN.md` 1.2) — this package can't derive "who" honestly |
 | `seal` | the **last existing** block (sealing appends no new block) | caller-supplied `actor` | |
 | `verify` | the terminal block of the *presented* token (re-decoded independently from `tokenBytes`, matching `@adc/core`'s own `verify()` decode path) | caller-supplied `actor` | `decision` is `'allow'`/`'deny'` from `result.ok`; a token that fails to decode at all falls back to a distinctly-prefixed synthetic identity (`undecodableResource()`) since `resourceId` is a required field |
-| `revoke` | the block named by a caller-supplied hash directly (Phase 7 isn't built yet — no `ParsedToken` to derive it from) | caller-supplied `actor` | `decision` is always `'allow'` (the revocation itself succeeded); the human-readable reason rides in `taintLabels`, never `denyReason` — that field is reserved for an actual denial |
+| `revoke` | the block named by a caller-supplied hash directly, not derived from a `ParsedToken` — a revocation is keyed by hash alone, and the operator revoking a credential (Phase 7's `services/mint` `POST /revoke`, say) may never hold the token itself | caller-supplied `actor` | `decision` is always `'allow'` (the revocation itself succeeded); the human-readable reason rides in `taintLabels`, never `denyReason` — that field is reserved for an actual denial |
 
 `mint`/`attenuate`/`seal`/`revoke` all use `decision: 'allow'` — Principal-
 Graph's `decision` is a strictly binary enum with no third "informational"
