@@ -22,10 +22,16 @@ See [`docs/PLAN.md`](docs/PLAN.md) for the full design and phased build plan.
   scope-bounding query (`POST /scope`/`POST /check`) before minting a root
   token, and rejects the whole mint — never silently trims — if a
   requested `scope` grant isn't actually held.
-- No revocation or broker/Principal-Graph integration yet — see the
+- **Phase 5 — done.** [`packages/adc-broker`](packages/adc-broker): the
+  [Taint-Tracked-Tool-Broker](https://github.com/NovaVey/Taint-Tracked-Tool-Broker)
+  adapter. `wrapWithAdcGate()` verifies an ADC token — against facts
+  derived from live broker state (declared sink capabilities, detected
+  destination host, the live taint watermark, the current time) — strictly
+  before the call ever reaches the broker's own taint gate; a
+  `createAdcAuditRedactor()` helper wires the token out of the audit trail.
+- No Principal-Graph integration or revocation yet — see the
   packages'/service's READMEs for exact scope and security notes.
-- Phases 5-7 (the broker adapter, Principal-Graph events, revocation) are
-  not implemented.
+- Phases 6-7 (Principal-Graph events, revocation) are not implemented.
 
 ## Packages
 
@@ -33,6 +39,7 @@ See [`docs/PLAN.md`](docs/PLAN.md) for the full design and phased build plan.
 packages/adc-core      format, sign, attenuate, seal, verify, caveats (Phases 1-2)
 packages/adc-testkit   reference evaluator, generators, differential fuzzer (Phase 3, dev-only)
 services/mint           HTTP mint service: holds the root key, RBA scope bounding (Phase 4)
+packages/adc-broker     Taint-Tracked-Tool-Broker adapter: verify-before-the-gate, facts, redaction (Phase 5)
 ```
 
 ```

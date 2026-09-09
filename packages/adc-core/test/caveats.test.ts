@@ -104,6 +104,20 @@ test("sinks: permits only listed sink classes", () => {
   assert.equal(code(verify(wire, rootPublicKey, {})), "ADC_SINK");
 });
 
+test("sinks: permits a hyphenated action segment (regression — Taint-Tracked-Tool-Broker's real SinkCapability vocabulary includes hyphenated actions like net:api-call, write:external-account, write:agent-memory, net:post-message; a narrower regex made parseCaveat reject those structurally on both mint and verify, found via packages/adc-broker's Phase 5 cross-verification)", () => {
+  const { rootSecretKey, rootPublicKey } = freshRoot();
+  const token = mintRoot(rootSecretKey, {
+    caveats: [{ kind: "sinks", classes: ["net:api-call", "write:external-account", "write:agent-memory", "net:post-message"] }],
+  });
+  const wire = encodeToken(token);
+
+  assert.equal(verify(wire, rootPublicKey, { sink: "net:api-call" }).ok, true);
+  assert.equal(verify(wire, rootPublicKey, { sink: "write:external-account" }).ok, true);
+  assert.equal(verify(wire, rootPublicKey, { sink: "write:agent-memory" }).ok, true);
+  assert.equal(verify(wire, rootPublicKey, { sink: "net:post-message" }).ok, true);
+  assert.equal(code(verify(wire, rootPublicKey, { sink: "exec:shell" })), "ADC_SINK");
+});
+
 // ---------------------------------------------------------------------
 // taint_max
 // ---------------------------------------------------------------------
@@ -315,6 +329,12 @@ test("mintRoot()/attenuate() reject structurally invalid caveats at construction
   assert.throws(() => mintRoot(rootSecretKey, { caveats: [{ kind: "expires", at: -1 }] }), AdcError);
   assert.throws(() => mintRoot(rootSecretKey, { caveats: [{ kind: "hosts", hostnames: ["not a hostname!"] }] }), AdcError);
   assert.throws(() => attenuate(token, { caveats: [{ kind: "aud", verifier: "" }] }), AdcError);
+  // SINK_CLASS_RE was widened to permit hyphens (see that regex's own
+  // comment) — still bounded: no colon, an uppercase segment, or a
+  // segment starting with a digit/hyphen/underscore must still reject.
+  assert.throws(() => mintRoot(rootSecretKey, { caveats: [{ kind: "sinks", classes: ["not-namespaced"] }] }), AdcError);
+  assert.throws(() => mintRoot(rootSecretKey, { caveats: [{ kind: "sinks", classes: ["EXEC:shell"] }] }), AdcError);
+  assert.throws(() => mintRoot(rootSecretKey, { caveats: [{ kind: "sinks", classes: ["exec:-shell"] }] }), AdcError);
 
   try {
     mintRoot(rootSecretKey, { caveats: [{ kind: "expires", at: -1 }] });

@@ -82,8 +82,17 @@ const HOSTNAME_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,
 
 // "namespace:action", e.g. exec:shell, write:fs, net:email (1.5's
 // examples). The actual set of valid sink classes is broker-owned
-// (Phase 5); this only pins the shape.
-const SINK_CLASS_RE = /^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*$/;
+// (Phase 5); this only pins the shape. Hyphens are permitted in both
+// segments, not just underscores/digits: Taint-Tracked-Tool-Broker's own
+// real SinkCapability vocabulary (the actual broker this caveat kind's
+// values are drawn from, per 1.5's "Sink classes import from the broker")
+// includes hyphenated action segments — write:external-account,
+// write:agent-memory, net:api-call, net:post-message — and a narrower
+// regex here would make parseCaveat structurally reject those on both the
+// mint AND verify path, for a namespace this package doesn't own the
+// vocabulary of in the first place (found via packages/adc-broker's
+// Phase 5 cross-verification against the real broker's published types).
+const SINK_CLASS_RE = /^[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*$/;
 
 function requireExactKeys(obj: Record<string, unknown>, expected: readonly string[]): void {
   const keys = Object.keys(obj).sort();
