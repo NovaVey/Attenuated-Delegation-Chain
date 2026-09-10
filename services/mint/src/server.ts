@@ -1,7 +1,10 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
+import { decodeToken, getPublicKey } from "@adc/core";
+import { buildMintEvent, buildRevokeEvent, createInMemoryGraphSink, type GraphEvent, type GraphPrincipalIdentity, type GraphSink } from "@adc/graph";
 import { buildRevocationList, signRevocationList } from "@adc/revocation";
 import { mintWithBounding } from "./mint.js";
+import { createTokenBucketRateLimiter, type RateLimiter } from "./rate-limiter.js";
 import type { RbaClient } from "./rba/client.js";
 import { RevocationStore } from "./revocation-store.js";
 
@@ -13,6 +16,13 @@ import { RevocationStore } from "./revocation-store.js";
 
 const MAX_BODY_BYTES = 64 * 1024; // requests here are small; this is generous headroom, not a real limit
 
+/** No caller identity of any kind exists for POST /revoke beyond "held
+ * the shared admin bearer token" (see config.ts's adminApiKey and
+ * README.md's Known limitations) — so every revoke event this service
+ * emits names the same coarse, service-level actor rather than guessing
+ * at a finer-grained identity that doesn't exist. */
+const REVOKE_ADMIN_PRINCIPAL: GraphPrincipalIdentity = { kind: "service", source: "adc-mint-admin", externalId: "admin" };
+
 export interface CreateMintServerOptions {
   readonly rootSecretKey: Uint8Array;
   readonly rba: RbaClient;
@@ -23,6 +33,27 @@ export interface CreateMintServerOptions {
    * directly, or pre-seed revoked hashes without going through HTTP.
    * Defaults to a fresh, empty in-memory store. */
   readonly revocationStore?: RevocationStore;
+  /** Max POST /mint requests per minute, service-wide — see
+   * src/rate-limiter.ts. Default 60 (1/sec sustained): generous enough
+   * not to trouble ordinary traffic, tight enough to meaningfully bound a
+   * runaway or malicious client before a single RBA call is even made. */
+  readonly mintRateLimitPerMinute?: number;
+  /** Injectable for tests that want a deterministic rate limiter (a fixed
+   * clock, or a pre-exhausted bucket) instead of one built from
+   * `mintRateLimitPerMinute` against the real wall clock. */
+  readonly mintRateLimiter?: RateLimiter;
+  /** Where successful 'mint' and 'revoke' actions are recorded as
+   * Principal-Graph events (docs/PLAN.md Phase 6) — see @adc/graph's own
+   * README for why this package can only emit plain event data, not write
+   * into Principal-Graph itself. Defaults to a fresh in-memory sink (see
+   * @adc/graph's createInMemoryGraphSink); a real deployment injects a
+   * sink that forwards to an actual Principal-Graph-side adapter.
+   * Rejected mints (scope_not_granted) are NOT represented here —
+   * @adc/graph's event vocabulary has no way to build an event for a mint
+   * that never produced a token (no block, no signature, nothing to
+   * derive a Principal-Graph resource identity from); see README.md's
+   * Known limitations. */
+  readonly graphSink?: GraphSink;
   /** Injectable for tests that want to assert on logged errors instead of
    * writing to the real console. Defaults to console.error. */
   readonly onInternalError?: (err: unknown) => void;
@@ -68,7 +99,45 @@ function readBody(req: IncomingMessage, maxBytes: number): Promise<string> {
   });
 }
 
-async function handleMint(req: IncomingMessage, res: ServerResponse, opts: CreateMintServerOptions): Promise<void> {
+/** Fully-resolved server state — every `CreateMintServerOptions` optional
+ * field defaulted exactly once, here, rather than each handler repeating
+ * its own `opts.x ?? default` fallback. Built once per `createMintServer()`
+ * call. */
+interface ServerContext {
+  readonly rootSecretKey: Uint8Array;
+  readonly rootPublicKey: Uint8Array;
+  readonly rba: RbaClient;
+  readonly adminApiKey: string;
+  readonly revocationStore: RevocationStore;
+  readonly mintRateLimiter: RateLimiter;
+  readonly graphSink: GraphSink;
+  readonly onInternalError: (err: unknown) => void;
+}
+
+/** Records a 'mint' or 'revoke' Principal-Graph event, never letting a
+ * sink failure affect the HTTP response — GraphSink's own contract says
+ * record() is synchronous and never throws back into its caller (see
+ * @adc/graph's event.ts doc comment), but a caller-injected sink might
+ * not honor that; this is the backstop, matching the "an audit/
+ * observability side channel never breaks the primary flow" discipline
+ * already established elsewhere in this codebase (packages/adc-broker's
+ * audit redaction). By the time this is called the mint or revoke has
+ * already durably succeeded, so a sink failure here must never turn an
+ * already-successful response into an error. */
+function recordGraphEvent(ctx: ServerContext, build: () => GraphEvent): void {
+  try {
+    ctx.graphSink.record(build());
+  } catch (err) {
+    ctx.onInternalError(err);
+  }
+}
+
+async function handleMint(req: IncomingMessage, res: ServerResponse, ctx: ServerContext): Promise<void> {
+  if (!ctx.mintRateLimiter.tryAcquire()) {
+    sendJson(res, 429, { error: { code: "rate_limited", message: "too many mint requests; try again shortly" } });
+    return;
+  }
+
   let raw: string;
   try {
     raw = await readBody(req, MAX_BODY_BYTES);
@@ -85,10 +154,16 @@ async function handleMint(req: IncomingMessage, res: ServerResponse, opts: Creat
     return;
   }
 
-  const outcome = await mintWithBounding(opts.rootSecretKey, opts.rba, parsed);
+  const outcome = await mintWithBounding(ctx.rootSecretKey, ctx.rba, parsed);
 
   if (outcome.ok) {
     sendJson(res, 201, { token: outcome.token, depth: outcome.depth });
+    // Re-decode the just-minted wire token rather than threading the
+    // ParsedToken out of mintWithBounding() — the same "re-decode
+    // independently from the wire bytes" pattern @adc/graph's own
+    // buildVerifyEvent() already uses, and it keeps mintWithBounding()'s
+    // return contract unchanged for every other caller/test.
+    recordGraphEvent(ctx, () => buildMintEvent(decodeToken(outcome.token), ctx.rootPublicKey));
     return;
   }
 
@@ -131,8 +206,8 @@ function isAuthorizedAdmin(req: IncomingMessage, adminApiKey: string): boolean {
   return provided.length === expected.length && timingSafeEqual(provided, expected);
 }
 
-async function handleRevoke(req: IncomingMessage, res: ServerResponse, opts: CreateMintServerOptions, store: RevocationStore): Promise<void> {
-  if (!isAuthorizedAdmin(req, opts.adminApiKey)) {
+async function handleRevoke(req: IncomingMessage, res: ServerResponse, ctx: ServerContext): Promise<void> {
+  if (!isAuthorizedAdmin(req, ctx.adminApiKey)) {
     sendJson(res, 401, { error: { code: "unauthorized", message: "missing or invalid admin bearer token" } });
     return;
   }
@@ -157,20 +232,42 @@ async function handleRevoke(req: IncomingMessage, res: ServerResponse, opts: Cre
     sendJson(res, 400, { error: { code: "invalid_request", message: "request body must be a JSON object" } });
     return;
   }
-  const hash = (parsed as Record<string, unknown>).hash;
+  const body = parsed as Record<string, unknown>;
+  const hash = body.hash;
   if (typeof hash !== "string") {
     sendJson(res, 400, { error: { code: "invalid_request", message: "'hash' must be a string" } });
     return;
   }
+  // Optional — free text, carried into the Principal-Graph event's
+  // taintLabels (see buildRevokeEvent's own doc comment: never
+  // denyReason, since this event's decision is always 'allow', the
+  // revocation itself succeeding). Not persisted anywhere else. Bounded
+  // well below MAX_BODY_BYTES: this is meant to be a short human note
+  // ("compromised key, incident #42"), not an arbitrary blob — a
+  // downstream GraphSink that logs/stores/displays taint labels verbatim
+  // shouldn't have to defend against one being stuffed with tens of KB of
+  // text just because the admin-authenticated caller who supplies it
+  // could.
+  const MAX_REASON_LENGTH = 500;
+  const reason = body.reason;
+  if (reason !== undefined && typeof reason !== "string") {
+    sendJson(res, 400, { error: { code: "invalid_request", message: "'reason', if present, must be a string" } });
+    return;
+  }
+  if (typeof reason === "string" && reason.length > MAX_REASON_LENGTH) {
+    sendJson(res, 400, { error: { code: "invalid_request", message: `'reason' must be at most ${MAX_REASON_LENGTH} characters` } });
+    return;
+  }
 
   try {
-    store.revoke(hash);
+    ctx.revocationStore.revoke(hash);
   } catch (err) {
     sendJson(res, 400, { error: { code: "invalid_request", message: (err as Error).message } });
     return;
   }
 
   sendJson(res, 200, { revoked: hash });
+  recordGraphEvent(ctx, () => buildRevokeEvent(hash, { actor: REVOKE_ADMIN_PRINCIPAL, reason: reason ?? "revoked via POST /revoke" }));
 }
 
 /** Builds and signs a FRESH list on every request — this store is small
@@ -180,15 +277,32 @@ async function handleRevoke(req: IncomingMessage, res: ServerResponse, opts: Cre
  * what actually bounds a *client's* view, not this endpoint's own
  * response. Unauthenticated: the list contains only hashes, nothing
  * sensitive — matching public CRL/OCSP-list practice. */
-function handleRevocations(res: ServerResponse, opts: CreateMintServerOptions, store: RevocationStore): void {
-  const list = buildRevocationList(store.list());
-  const signed = signRevocationList(list, opts.rootSecretKey);
+function handleRevocations(res: ServerResponse, ctx: ServerContext): void {
+  const list = buildRevocationList(ctx.revocationStore.list());
+  const signed = signRevocationList(list, ctx.rootSecretKey);
   sendJson(res, 200, signed);
 }
 
 export function createMintServer(opts: CreateMintServerOptions): Server {
-  const onInternalError = opts.onInternalError ?? ((err: unknown) => console.error("mint-service: unhandled error", err));
-  const revocationStore = opts.revocationStore ?? new RevocationStore();
+  const ctx: ServerContext = {
+    rootSecretKey: opts.rootSecretKey,
+    // Deliberately eager: a wrong-length rootSecretKey now throws here,
+    // at server construction, rather than lazily on the first mint/revoke
+    // that actually needs the derived public key — the same "fail loudly
+    // and immediately, not silently until first use" preference this
+    // round of changes already applies to a corrupt revocation-store
+    // file (see revocation-store.ts). index.ts's own config.ts already
+    // validates the key's length before ever reaching this call, so this
+    // never fires in production; it only changes WHEN a malformed key
+    // passed directly to this function (bypassing config.ts) is caught.
+    rootPublicKey: getPublicKey(opts.rootSecretKey),
+    rba: opts.rba,
+    adminApiKey: opts.adminApiKey,
+    revocationStore: opts.revocationStore ?? new RevocationStore(),
+    mintRateLimiter: opts.mintRateLimiter ?? createTokenBucketRateLimiter({ limit: opts.mintRateLimitPerMinute ?? 60, windowMs: 60_000 }),
+    graphSink: opts.graphSink ?? createInMemoryGraphSink(),
+    onInternalError: opts.onInternalError ?? ((err: unknown) => console.error("mint-service: unhandled error", err)),
+  };
 
   return createServer((req, res) => {
     void (async () => {
@@ -198,20 +312,20 @@ export function createMintServer(opts: CreateMintServerOptions): Server {
           return;
         }
         if (req.method === "POST" && req.url === "/mint") {
-          await handleMint(req, res, opts);
+          await handleMint(req, res, ctx);
           return;
         }
         if (req.method === "POST" && req.url === "/revoke") {
-          await handleRevoke(req, res, opts, revocationStore);
+          await handleRevoke(req, res, ctx);
           return;
         }
         if (req.method === "GET" && req.url === "/revocations") {
-          handleRevocations(res, opts, revocationStore);
+          handleRevocations(res, ctx);
           return;
         }
         sendJson(res, 404, { error: { code: "not_found", message: "no such route" } });
       } catch (err) {
-        onInternalError(err);
+        ctx.onInternalError(err);
         if (!res.headersSent) {
           sendJson(res, 500, { error: { code: "internal_error", message: "unexpected server error" } });
         } else {

@@ -22,6 +22,8 @@ test("loads a valid config, defaulting PORT to 3001", () => {
   assert.equal(config.rba.apiKey, "test-api-key");
   assert.equal(config.rba.timeoutMs, undefined);
   assert.equal(config.adminApiKey, "test-admin-key");
+  assert.equal(config.mintRateLimitPerMinute, undefined);
+  assert.equal(config.revocationStoreFilePath, undefined);
 });
 
 test("respects an explicit PORT", () => {
@@ -72,6 +74,33 @@ test("throws on an invalid PORT", () => {
 test("throws on an invalid RBA_TIMEOUT_MS", () => {
   assert.throws(() => loadConfigFromEnv(baseEnv({ RBA_TIMEOUT_MS: "-5" })), /RBA_TIMEOUT_MS/);
   assert.throws(() => loadConfigFromEnv(baseEnv({ RBA_TIMEOUT_MS: "not-a-number" })), /RBA_TIMEOUT_MS/);
+});
+
+test("respects MINT_RATE_LIMIT_PER_MINUTE", () => {
+  const config = loadConfigFromEnv(baseEnv({ MINT_RATE_LIMIT_PER_MINUTE: "120" }));
+  assert.equal(config.mintRateLimitPerMinute, 120);
+});
+
+test("throws on an invalid MINT_RATE_LIMIT_PER_MINUTE", () => {
+  assert.throws(() => loadConfigFromEnv(baseEnv({ MINT_RATE_LIMIT_PER_MINUTE: "0" })), /MINT_RATE_LIMIT_PER_MINUTE/);
+  assert.throws(() => loadConfigFromEnv(baseEnv({ MINT_RATE_LIMIT_PER_MINUTE: "-5" })), /MINT_RATE_LIMIT_PER_MINUTE/);
+  assert.throws(() => loadConfigFromEnv(baseEnv({ MINT_RATE_LIMIT_PER_MINUTE: "not-a-number" })), /MINT_RATE_LIMIT_PER_MINUTE/);
+  // A fractional value below 1 must be rejected too — see config.ts's own
+  // doc comment: it would otherwise pass a bare "> 0" check yet build a
+  // rate limiter that can never grant even a single request.
+  assert.throws(() => loadConfigFromEnv(baseEnv({ MINT_RATE_LIMIT_PER_MINUTE: "0.5" })), /MINT_RATE_LIMIT_PER_MINUTE/);
+  // Non-integer, otherwise positive — still rejected, matching PORT/RBA_TIMEOUT_MS's own integer-only convention.
+  assert.throws(() => loadConfigFromEnv(baseEnv({ MINT_RATE_LIMIT_PER_MINUTE: "60.5" })), /MINT_RATE_LIMIT_PER_MINUTE/);
+});
+
+test("respects MINT_REVOCATION_STORE_PATH", () => {
+  const config = loadConfigFromEnv(baseEnv({ MINT_REVOCATION_STORE_PATH: "/var/lib/adc-mint/revoked.json" }));
+  assert.equal(config.revocationStoreFilePath, "/var/lib/adc-mint/revoked.json");
+});
+
+test("MINT_REVOCATION_STORE_PATH set to an empty string is treated the same as unset", () => {
+  const config = loadConfigFromEnv(baseEnv({ MINT_REVOCATION_STORE_PATH: "" }));
+  assert.equal(config.revocationStoreFilePath, undefined);
 });
 
 test("the base64 root secret key decodes to the exact expected bytes, not a truncated or re-encoded value", () => {

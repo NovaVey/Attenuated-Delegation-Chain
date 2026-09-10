@@ -20,6 +20,16 @@ export interface ServiceConfig {
    * echoed back), though its blast radius is narrower than the root key:
    * holding it lets someone revoke blocks, not mint or forge tokens. */
   readonly adminApiKey: string;
+  /** Max POST /mint requests per minute, service-wide (see
+   * src/rate-limiter.ts's own doc comment on why this exists in addition
+   * to RBA's own per-API-key limits). undefined when unset — server.ts
+   * applies its own default, matching this file's established convention
+   * for optional numeric settings (see rba.timeoutMs). */
+  readonly mintRateLimitPerMinute?: number;
+  /** Path to a JSON file backing the revocation store durably across
+   * restarts — see src/revocation-store.ts. undefined (the default)
+   * keeps the store purely in-memory, exactly as it's always been. */
+  readonly revocationStoreFilePath?: string;
 }
 
 function requireEnv(env: NodeJS.ProcessEnv, name: string): string {
@@ -63,5 +73,30 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Service
     }
   }
 
-  return { port, rootSecretKey, rba: { baseUrl: rbaBaseUrl, apiKey: rbaApiKey, timeoutMs }, adminApiKey };
+  let mintRateLimitPerMinute: number | undefined;
+  if (env.MINT_RATE_LIMIT_PER_MINUTE !== undefined) {
+    mintRateLimitPerMinute = Number(env.MINT_RATE_LIMIT_PER_MINUTE);
+    // A positive INTEGER, matching PORT/RBA_TIMEOUT_MS's own convention
+    // above — not just "> 0": a fractional value below 1 (e.g. "0.5")
+    // would pass a bare "> 0" check yet produce a rate limiter whose own
+    // bucket capacity can never reach the >= 1 threshold needed to grant
+    // even a single request, silently denying every POST /mint forever
+    // (see rate-limiter.ts's own hardening for the same issue).
+    if (!Number.isInteger(mintRateLimitPerMinute) || mintRateLimitPerMinute < 1) {
+      throw new Error(`MINT_RATE_LIMIT_PER_MINUTE must be a positive integer, got '${env.MINT_RATE_LIMIT_PER_MINUTE}'`);
+    }
+  }
+
+  const revocationStoreFilePath = env.MINT_REVOCATION_STORE_PATH === undefined || env.MINT_REVOCATION_STORE_PATH.length === 0
+    ? undefined
+    : env.MINT_REVOCATION_STORE_PATH;
+
+  return {
+    port,
+    rootSecretKey,
+    rba: { baseUrl: rbaBaseUrl, apiKey: rbaApiKey, timeoutMs },
+    adminApiKey,
+    mintRateLimitPerMinute,
+    revocationStoreFilePath,
+  };
 }
