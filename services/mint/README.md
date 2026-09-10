@@ -89,7 +89,14 @@ against a relationship graph and pass through untouched.
 // unrecognized caveat kind — @adc/core's own closed-vocabulary rejection
 // runs here, before any RBA call)
 { "error": { "code": "invalid_request", "message": "..." } }
+
+// 429 — this service's own rate limit (MINT_RATE_LIMIT_PER_MINUTE),
+// checked FIRST — before body parsing, before any RBA call
+{ "error": { "code": "rate_limited", "message": "..." } }
 ```
+
+A successful mint also records exactly one `'mint'` Principal-Graph event
+— see "Principal-Graph events" below.
 
 ### `GET /health`
 
@@ -105,8 +112,10 @@ hash (the root signature every descendant token also carries) kills every
 token minted from that root, for free; that's the whole mechanism.
 
 ```jsonc
-// Request
-{ "hash": "5b3f...<64 lowercase hex chars>" }
+// Request — "reason" is optional free text (max 500 chars), carried into
+// the Principal-Graph event's taintLabels (see below); defaults to
+// "revoked via POST /revoke" if omitted
+{ "hash": "5b3f...<64 lowercase hex chars>", "reason": "compromised key, incident #42" }
 
 // 200 — success (idempotent: revoking an already-revoked hash is a no-op, not an error)
 { "revoked": "5b3f..." }
@@ -114,11 +123,16 @@ token minted from that root, for free; that's the whole mechanism.
 // 401 — missing or wrong admin bearer token
 { "error": { "code": "unauthorized", "message": "..." } }
 
-// 400 — malformed body or a hash that isn't 64 lowercase hex chars
+// 400 — malformed body, a hash that isn't 64 lowercase hex chars, a
+// non-string "reason", or a "reason" over 500 characters
 { "error": { "code": "invalid_request", "message": "..." } }
 ```
 
-Revoked hashes live in an **in-memory store, lost on restart** — see
+A successful revoke also records exactly one `'revoke'` Principal-Graph
+event — see "Principal-Graph events" below.
+
+Revoked hashes live in an **in-memory store by default, optionally
+file-backed** (`MINT_REVOCATION_STORE_PATH`) — see Configuration and
 Known limitations below.
 
 ### `GET /revocations` — [`docs/PLAN.md`](../../docs/PLAN.md) Phase 7
@@ -146,6 +160,47 @@ that package's README for the full liveness-bound writeup (the "150s
 worst case" number from Phase 7) and the client's caching/staleness
 behavior.
 
+## Principal-Graph events
+
+[`docs/PLAN.md`](../../docs/PLAN.md) Phase 6: mint, attenuate, verify-allow,
+verify-deny, seal, revoke. This service can only ever produce two of those
+six — `'mint'` (on a successful `POST /mint`) and `'revoke'` (on a
+successful `POST /revoke`) — using `@adc/graph`'s existing `buildMintEvent()`/
+`buildRevokeEvent()` builders as-is, recorded into an injectable `GraphSink`
+(`createMintServer({ graphSink, ... })`; defaults to a fresh, private
+in-memory sink via `@adc/graph`'s own `createInMemoryGraphSink()` when not
+supplied — see `@adc/graph`'s README for what a real Principal-Graph-side
+sink looks like).
+
+- **`'mint'`** — principal is derived automatically from the root public
+  key (`rootKeyPrincipal()`); the event references the exact block-0
+  identity of the token just minted. `onBehalfOf` is deliberately left
+  `null`: the mint request's `subject` (`{ns, id}`) is an open, RBA-defined
+  namespace with no fixed mapping onto `@adc/graph`'s closed
+  `human | agent | service` principal-kind enum, and this package's own
+  convention is "`null` when not attributable — never guessed" (see
+  `@adc/graph`'s `GraphEvent.onBehalfOf` doc comment).
+- **`'revoke'`** — principal is a single, fixed `{kind: 'service', source:
+  'adc-mint-admin', externalId: 'admin'}` identity, since `POST /revoke`
+  has no finer-grained caller identity than "held the shared admin bearer
+  token" (see Known limitations). The request's optional `"reason"` field
+  rides in the event's `taintLabels`.
+- **Rejections are not represented.** `docs/PLAN.md`'s Phase 4 line — "the
+  rejection is a Principal-Graph event once Phase 6 lands" — turns out not
+  to be buildable with `@adc/graph`'s actual, shipped event vocabulary: a
+  `scope_not_granted` mint rejection never produces a token, so there is no
+  block, no signature, and nothing to derive a Principal-Graph `resource`
+  identity from (`buildMintEvent()` requires a real minted `ParsedToken`).
+  Representing a rejection would mean extending `@adc/graph`'s own,
+  already-shipped API with a new resource kind — out of scope here; see
+  Known limitations.
+- **A sink failure never breaks the HTTP response.** `GraphSink.record()`
+  is documented to be synchronous and never throw back into its caller,
+  but this service doesn't rely on that being honored perfectly by every
+  injected sink — a throwing sink is caught and reported via
+  `onInternalError`, after the mint/revoke has already durably succeeded
+  and its response already sent.
+
 ## Configuration
 
 | env var | required | meaning |
@@ -156,6 +211,8 @@ behavior.
 | `MINT_ADMIN_API_KEY` | yes | Bearer token required on `POST /revoke`. A secret, but narrower blast radius than the root key: holding it lets someone revoke blocks, not mint or forge tokens. |
 | `PORT` | no (default `3001`) | |
 | `RBA_TIMEOUT_MS` | no (default `5000`) | Per-RBA-call timeout, covering the entire request including response body — not just until headers arrive. RBA is a synchronous dependency on the mint path; a hung call must not hang minting indefinitely. |
+| `MINT_RATE_LIMIT_PER_MINUTE` | no (default `60`) | Service-wide `POST /mint` rate limit (a token bucket — see `src/rate-limiter.ts`), independent of and in addition to RBA's own per-API-key limits. Checked before body parsing or any RBA call. |
+| `MINT_REVOCATION_STORE_PATH` | no (default unset — in-memory only) | Path to a JSON file the revocation store loads from at startup and writes through to on every successful revoke, so revocations survive a restart. See `src/revocation-store.ts` and Known limitations. |
 
 ## Running
 
@@ -203,39 +260,83 @@ Postgres, no live network dependency for `npm test`:
   `RevocationStore` for pre-seeding, and a full end-to-end test that
   mints a real token through this server, revokes its block-0 hash, and
   confirms `@adc/core`'s `verify()` denies it with `ADC_REVOKED` using the
-  exact signed list this server served.
-- `test/revocation-store.test.ts` — the in-memory store on its own:
-  idempotent `revoke()`, hash-shape validation, `list()` contents.
-- `test/config.test.ts` — env parsing and validation, including the new
-  `MINT_ADMIN_API_KEY`.
+  exact signed list this server served; a successful mint/revoke each
+  recording exactly one correctly-shaped Principal-Graph event via an
+  injected `GraphSink`, a rejected/invalid request recording none, an
+  optional `"reason"` field on `POST /revoke` landing in the event's
+  `taintLabels`, and a throwing `GraphSink` never affecting the HTTP
+  response (only reported via `onInternalError`); `POST /mint`'s rate
+  limit returning 429 once exhausted (independent of request validity,
+  and not affecting `GET /health`/`POST /revoke`), and an injected
+  `mintRateLimiter` overriding the config-derived default.
+- `test/rate-limiter.test.ts` — the token-bucket limiter on its own:
+  allows a burst up to `limit`, denies beyond it with no time passed,
+  refills proportional to elapsed time via an injected clock (no real
+  waiting), never refills past `limit` even after an enormous idle gap,
+  independent buckets per instance, and input validation.
+- `test/revocation-store.test.ts` — the store, both in-memory (idempotent
+  `revoke()`, hash-shape validation, `list()` contents) and file-backed:
+  a fresh file path starts empty and the first `revoke()` creates it,
+  revocations surviving a simulated restart (a second `RevocationStore`
+  instance against the same file), idempotent `revoke()` performing no
+  disk write for an already-revoked hash, nested parent directories being
+  created automatically, a corrupt (non-JSON) or wrong-shaped file being
+  refused at load time rather than silently starting with an empty (==
+  "nothing revoked") set, a hand-seeded pre-existing file loading
+  correctly, and a disk-write failure leaving the in-memory state
+  untouched rather than accepting the revoke only in memory.
+- `test/config.test.ts` — env parsing and validation, including
+  `MINT_ADMIN_API_KEY`, `MINT_RATE_LIMIT_PER_MINUTE`, and
+  `MINT_REVOCATION_STORE_PATH`.
 
 ## Known limitations
 
-- **No client-side rate limiting.** RBA's own limits (`/scope`: 20
-  req/min, `/check`: 200 req/min, per API key) are the only throttle. A
-  burst of concurrent mint requests can exceed those and see some
-  legitimately-grantable mints rejected as `rba_unavailable` (RBA
-  returning 429) rather than queued or retried. Fail-closed under load is
-  the intentional trade-off; a retry/backoff or a request queue is future
-  work, not required by Phase 4's acceptance criteria.
+- **`POST /mint`'s rate limit is service-wide, not per-caller.** There's
+  no caller identity to key a per-caller limit on (see the next bullet) —
+  `MINT_RATE_LIMIT_PER_MINUTE` is a single token bucket shared by every
+  caller. RBA's own limits (`/scope`: 20 req/min, `/check`: 200 req/min,
+  per API key) remain the limiting factor for how much *scope-bounding*
+  traffic this service can actually sustain; this rate limit protects
+  this service's own front door (and, transitively, RBA) from a runaway
+  or malicious client, not RBA's per-key throughput. A legitimately busy,
+  well-behaved deployment can still raise `MINT_RATE_LIMIT_PER_MINUTE` as
+  needed.
 - **No mint-time authentication of the caller.** Anyone who can reach this
   service can request a mint for any `subject` — RBA's bounding still
   confines what that subject can actually be granted, but *who is allowed
   to ask on Alice's behalf* is a separate concern this phase doesn't
   address (not called for in `docs/PLAN.md`'s Phase 4 either). A real
-  deployment sits this behind its own network boundary/auth layer.
-- **No Principal-Graph event on rejection.** `docs/PLAN.md`: "the
-  rejection is a Principal-Graph event once Phase 6 lands" — `packages/adc-graph`
-  (Phase 6) exists now, but this service doesn't call it: a `scope_not_granted`
-  rejection is only visible in the HTTP response, not emitted as a
-  Principal-Graph event. Wiring that in is future work, not required by
-  Phase 4's acceptance criteria.
-- **Revoked hashes are in-memory only — lost on restart.** `src/revocation-store.ts`
-  is a plain `Set`; restarting this process un-revokes everything it held.
-  A real deployment backs this with persistent storage (a database, a
-  file, anything durable) behind the same `revoke()`/`list()` shape —
-  nothing in Phase 7's acceptance criteria (the signed-list format, the
-  offline check, the liveness bound) requires that yet.
+  deployment sits this behind its own network boundary/auth layer. Left
+  as documented, by design — deliberately not reversed even though
+  `POST /revoke` gained its own admin auth in the same round of work that
+  added the rate limiter above, because `POST /revoke` is a rare,
+  single-operator admin action while `POST /mint` is this service's
+  entire normal traffic, with no established caller-identity model to
+  authenticate against.
+- **Rejected mints produce no Principal-Graph event.** See "Principal-Graph
+  events" above for why: `@adc/graph`'s shipped event vocabulary has
+  no way to represent an attempt that never produced a token. Successful
+  mints and successful revokes DO now emit real events (also see
+  "Principal-Graph events" above) — this is what remains unrepresented.
+- **The default `GraphSink` is a private, process-local, in-memory one.**
+  With no `graphSink` injected, `createMintServer()` uses `@adc/graph`'s
+  own `createInMemoryGraphSink()` — events accumulate in memory and are
+  never actually consumed by anything. There is, as of this writing, no
+  real HTTP-forwarding `GraphSink` implementation anywhere in this
+  codebase to default to instead: Principal-Graph itself has no write API
+  (see `@adc/graph`'s own README), so the real integration point is
+  always a deployment-specific sink injected via `createMintServer({
+  graphSink, ... })`, not something this service can sensibly default to
+  on its own.
+- **Revoked hashes are in-memory only unless `MINT_REVOCATION_STORE_PATH`
+  is set.** With it unset (the default), `src/revocation-store.ts` is a
+  plain `Set`; restarting this process un-revokes everything it held. With
+  it set, revocations survive a restart via a synchronous, atomic
+  (write-temp-then-rename) file write on every `revoke()` — see that
+  file's own doc comment. **Single-writer only**: file-backed mode has no
+  cross-process locking, so it's sized for this service's actual
+  deployment shape (one process holding the one root key), not multiple
+  instances sharing one file.
 - **Revocation reuses the root key — no separate revocation-authority
   key.** `POST /revoke`/`GET /revocations` sign with the same
   `MINT_ROOT_SECRET_KEY_B64` that mints tokens. Verifiers already trust

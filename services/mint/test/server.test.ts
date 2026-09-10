@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import { verify, generateKeypair, blockSignatureHash, decodeToken } from "@adc/core";
+import { createInMemoryGraphSink } from "@adc/graph";
 import { verifySignedRevocationList } from "@adc/revocation";
 import { createMintServer, type CreateMintServerOptions } from "../src/server.js";
 import { FakeRbaClient } from "../src/rba/fake.js";
@@ -334,4 +335,310 @@ test("POST /revoke can pre-seed via an injected RevocationStore, observable thro
     },
     { revocationStore: store },
   );
+});
+
+// --- Principal-Graph event emission -------------------------------------
+
+test("POST /mint: a successful mint records exactly one 'mint' Principal-Graph event, referencing the real minted block", async () => {
+  const { secretKey, publicKey } = generateKeypair();
+  const graphSink = createInMemoryGraphSink();
+  await withServer(
+    new FakeRbaClient(),
+    secretKey,
+    async (baseUrl) => {
+      const res = await fetch(`${baseUrl}/mint`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ subject: ALICE, caveats: [] }),
+      });
+      assert.equal(res.status, 201);
+      const { token } = (await res.json()) as { token: string };
+
+      assert.equal(graphSink.events.length, 1);
+      const event = graphSink.events[0]!;
+      assert.equal(event.action, "mint");
+      assert.equal(event.decision, "allow");
+      assert.equal(event.principal.externalId, Buffer.from(publicKey).toString("base64url"), "principal is derived from the root public key");
+
+      const parsed = decodeToken(token);
+      const expectedHash = blockSignatureHash(parsed.sigs[0]!);
+      assert.equal(event.resource.externalId, expectedHash, "the event references the exact block just minted");
+    },
+    { graphSink },
+  );
+});
+
+test("POST /mint: a scope_not_granted rejection records NO Principal-Graph event (no token was ever minted)", async () => {
+  const { secretKey } = generateKeypair();
+  const graphSink = createInMemoryGraphSink();
+  await withServer(
+    new FakeRbaClient(),
+    secretKey,
+    async (baseUrl) => {
+      const res = await fetch(`${baseUrl}/mint`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ subject: ALICE, caveats: [{ kind: "scope", triples: [["repo", "1", "admin"]] }] }),
+      });
+      assert.equal(res.status, 403);
+      assert.equal(graphSink.events.length, 0);
+    },
+    { graphSink },
+  );
+});
+
+test("POST /mint: an invalid_request (malformed body) records NO Principal-Graph event", async () => {
+  const { secretKey } = generateKeypair();
+  const graphSink = createInMemoryGraphSink();
+  await withServer(
+    new FakeRbaClient(),
+    secretKey,
+    async (baseUrl) => {
+      const res = await fetch(`${baseUrl}/mint`, { method: "POST", headers: { "content-type": "application/json" }, body: "{not valid json" });
+      assert.equal(res.status, 400);
+      assert.equal(graphSink.events.length, 0);
+    },
+    { graphSink },
+  );
+});
+
+test("POST /revoke: a successful revoke records exactly one 'revoke' Principal-Graph event with the fixed admin principal", async () => {
+  const { secretKey } = generateKeypair();
+  const graphSink = createInMemoryGraphSink();
+  const hash = "a".repeat(64);
+  await withServer(
+    new FakeRbaClient(),
+    secretKey,
+    async (baseUrl) => {
+      const res = await fetch(`${baseUrl}/revoke`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${ADMIN_API_KEY}` },
+        body: JSON.stringify({ hash }),
+      });
+      assert.equal(res.status, 200);
+
+      assert.equal(graphSink.events.length, 1);
+      const event = graphSink.events[0]!;
+      assert.equal(event.action, "revoke");
+      assert.equal(event.decision, "allow");
+      assert.equal(event.resource.externalId, hash);
+      assert.equal(event.principal.kind, "service");
+      assert.deepEqual([...event.taintLabels], ["reason:revoked via POST /revoke"]);
+    },
+    { graphSink },
+  );
+});
+
+test("POST /revoke: an optional 'reason' field is carried into the event's taintLabels", async () => {
+  const { secretKey } = generateKeypair();
+  const graphSink = createInMemoryGraphSink();
+  const hash = "b".repeat(64);
+  await withServer(
+    new FakeRbaClient(),
+    secretKey,
+    async (baseUrl) => {
+      const res = await fetch(`${baseUrl}/revoke`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${ADMIN_API_KEY}` },
+        body: JSON.stringify({ hash, reason: "compromised key, incident #42" }),
+      });
+      assert.equal(res.status, 200);
+      assert.deepEqual([...graphSink.events[0]!.taintLabels], ["reason:compromised key, incident #42"]);
+    },
+    { graphSink },
+  );
+});
+
+test("POST /revoke: a non-string 'reason' is 400 invalid_request", async () => {
+  const { secretKey } = generateKeypair();
+  await withServer(new FakeRbaClient(), secretKey, async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/revoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${ADMIN_API_KEY}` },
+      body: JSON.stringify({ hash: "a".repeat(64), reason: 12345 }),
+    });
+    assert.equal(res.status, 400);
+  });
+});
+
+test("POST /revoke: an overlong 'reason' (> 500 chars) is 400 invalid_request, and no revoke/event happens", async () => {
+  const { secretKey } = generateKeypair();
+  const graphSink = createInMemoryGraphSink();
+  await withServer(
+    new FakeRbaClient(),
+    secretKey,
+    async (baseUrl) => {
+      const res = await fetch(`${baseUrl}/revoke`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${ADMIN_API_KEY}` },
+        body: JSON.stringify({ hash: "a".repeat(64), reason: "x".repeat(501) }),
+      });
+      assert.equal(res.status, 400);
+
+      const listRes = await fetch(`${baseUrl}/revocations`);
+      const { payload } = (await listRes.json()) as { payload: { revoked: string[] } };
+      assert.deepEqual(payload.revoked, [], "the hash must not have been revoked despite the bad reason arriving alongside it");
+      assert.equal(graphSink.events.length, 0);
+    },
+    { graphSink },
+  );
+});
+
+test("POST /revoke: a 'reason' at exactly the 500-char limit is accepted", async () => {
+  const { secretKey } = generateKeypair();
+  const hash = "a".repeat(64);
+  await withServer(new FakeRbaClient(), secretKey, async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/revoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${ADMIN_API_KEY}` },
+      body: JSON.stringify({ hash, reason: "x".repeat(500) }),
+    });
+    assert.equal(res.status, 200);
+  });
+});
+
+test("POST /revoke: an unauthorized attempt records NO Principal-Graph event", async () => {
+  const { secretKey } = generateKeypair();
+  const graphSink = createInMemoryGraphSink();
+  await withServer(
+    new FakeRbaClient(),
+    secretKey,
+    async (baseUrl) => {
+      const res = await fetch(`${baseUrl}/revoke`, {
+        method: "POST",
+        headers: { "content-type": "application/json" }, // no Authorization header
+        body: JSON.stringify({ hash: "a".repeat(64) }),
+      });
+      assert.equal(res.status, 401);
+      assert.equal(graphSink.events.length, 0);
+    },
+    { graphSink },
+  );
+});
+
+test("a GraphSink that throws never breaks the HTTP response, and the failure is reported via onInternalError", async () => {
+  const { secretKey } = generateKeypair();
+  const internalErrors: unknown[] = [];
+  const throwingSink = { record: () => { throw new Error("sink is down"); } };
+  await withServer(
+    new FakeRbaClient(),
+    secretKey,
+    async (baseUrl) => {
+      const res = await fetch(`${baseUrl}/mint`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ subject: ALICE, caveats: [] }),
+      });
+      assert.equal(res.status, 201, "the mint itself must still succeed despite the sink failure");
+      const body = (await res.json()) as { token: string };
+      assert.ok(body.token);
+      assert.equal(internalErrors.length, 1);
+      assert.match((internalErrors[0] as Error).message, /sink is down/);
+    },
+    { graphSink: throwingSink, onInternalError: (err) => internalErrors.push(err) },
+  );
+});
+
+// --- POST /mint rate limiting --------------------------------------------
+
+test("POST /mint: a request beyond the configured rate limit is rejected 429, without ever reaching RBA/minting", async () => {
+  const { secretKey } = generateKeypair();
+  const rba = new FakeRbaClient();
+  await withServer(
+    rba,
+    secretKey,
+    async (baseUrl) => {
+      const mint = () =>
+        fetch(`${baseUrl}/mint`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ subject: ALICE, caveats: [] }),
+        });
+
+      const first = await mint();
+      const second = await mint();
+      assert.equal(first.status, 201);
+      assert.equal(second.status, 201);
+
+      const third = await mint();
+      assert.equal(third.status, 429);
+      const body = (await third.json()) as { error: { code: string } };
+      assert.equal(body.error.code, "rate_limited");
+    },
+    { mintRateLimitPerMinute: 2 },
+  );
+});
+
+test("POST /mint: rate limiting is independent of the request's validity — a rate-limited call never reaches the invalid_request/scope checks", async () => {
+  const { secretKey } = generateKeypair();
+  await withServer(
+    new FakeRbaClient(),
+    secretKey,
+    async (baseUrl) => {
+      const badBody = () => fetch(`${baseUrl}/mint`, { method: "POST", headers: { "content-type": "application/json" }, body: "{not valid json" });
+      const first = await badBody();
+      assert.equal(first.status, 400, "sanity: this body is normally a 400, not a 429");
+
+      const second = await badBody();
+      assert.equal(second.status, 429, "the SECOND call (limit is 1) is rate-limited even though the body is also invalid");
+    },
+    { mintRateLimitPerMinute: 1 },
+  );
+});
+
+test("POST /mint: GET /health and POST /revoke are unaffected by the mint rate limit", async () => {
+  const { secretKey } = generateKeypair();
+  await withServer(
+    new FakeRbaClient(),
+    secretKey,
+    async (baseUrl) => {
+      // Exhaust the mint limit.
+      await fetch(`${baseUrl}/mint`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ subject: ALICE, caveats: [] }) });
+      const exhausted = await fetch(`${baseUrl}/mint`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ subject: ALICE, caveats: [] }) });
+      assert.equal(exhausted.status, 429);
+
+      const health = await fetch(`${baseUrl}/health`);
+      assert.equal(health.status, 200);
+
+      const revoke = await fetch(`${baseUrl}/revoke`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${ADMIN_API_KEY}` },
+        body: JSON.stringify({ hash: "a".repeat(64) }),
+      });
+      assert.equal(revoke.status, 200);
+    },
+    { mintRateLimitPerMinute: 1 },
+  );
+});
+
+test("POST /mint: a custom injected RateLimiter (mintRateLimiter) is used verbatim instead of building one from mintRateLimitPerMinute", async () => {
+  const { secretKey } = generateKeypair();
+  let acquireCalls = 0;
+  const customLimiter = { tryAcquire: () => { acquireCalls++; return acquireCalls <= 1; } };
+  await withServer(
+    new FakeRbaClient(),
+    secretKey,
+    async (baseUrl) => {
+      const mint = () => fetch(`${baseUrl}/mint`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ subject: ALICE, caveats: [] }) });
+      assert.equal((await mint()).status, 201);
+      assert.equal((await mint()).status, 429);
+      assert.equal(acquireCalls, 2);
+    },
+    { mintRateLimiter: customLimiter, mintRateLimitPerMinute: 999 }, // mintRateLimiter must win over this
+  );
+});
+
+// --- fail-fast root key validation ---------------------------------------
+
+test("createMintServer() throws immediately for a wrong-length rootSecretKey, rather than deferring the failure to the first request", () => {
+  // Deliberate: see server.ts's own doc comment on the eager
+  // getPublicKey() call in createMintServer(). index.ts's config.ts
+  // already validates key length before ever reaching this function in
+  // production, so this only matters for a caller invoking
+  // createMintServer() directly with a bad key.
+  assert.throws(() => createMintServer({
+    rootSecretKey: new Uint8Array(16), // wrong length — must be 32
+    rba: new FakeRbaClient(),
+    adminApiKey: ADMIN_API_KEY,
+  }));
 });
