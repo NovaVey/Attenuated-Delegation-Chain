@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import { loadConfigFromEnv } from "../src/config.js";
 
 const VALID_KEY_B64 = Buffer.from(new Uint8Array(32).fill(7)).toString("base64");
@@ -101,6 +102,41 @@ test("respects MINT_REVOCATION_STORE_PATH", () => {
 test("MINT_REVOCATION_STORE_PATH set to an empty string is treated the same as unset", () => {
   const config = loadConfigFromEnv(baseEnv({ MINT_REVOCATION_STORE_PATH: "" }));
   assert.equal(config.revocationStoreFilePath, undefined);
+});
+
+test("respects MINT_GRAPH_EVENTS_PATH", () => {
+  const config = loadConfigFromEnv(baseEnv({ MINT_GRAPH_EVENTS_PATH: "/var/log/adc-mint/events.ndjson" }));
+  assert.equal(config.graphEventsFilePath, "/var/log/adc-mint/events.ndjson");
+});
+
+test("MINT_GRAPH_EVENTS_PATH is undefined when unset, and an empty string is treated the same as unset", () => {
+  assert.equal(loadConfigFromEnv(baseEnv()).graphEventsFilePath, undefined);
+  assert.equal(loadConfigFromEnv(baseEnv({ MINT_GRAPH_EVENTS_PATH: "" })).graphEventsFilePath, undefined);
+});
+
+test("throws if MINT_REVOCATION_STORE_PATH and MINT_GRAPH_EVENTS_PATH point at the same file", () => {
+  // Regression test for an adversarial-review finding: these two files
+  // are written by incompatible strategies (replace vs. append) and
+  // would silently corrupt each other if pointed at the same path.
+  assert.throws(
+    () => loadConfigFromEnv(baseEnv({ MINT_REVOCATION_STORE_PATH: "/var/lib/adc-mint/state.json", MINT_GRAPH_EVENTS_PATH: "/var/lib/adc-mint/state.json" })),
+    /MINT_REVOCATION_STORE_PATH and MINT_GRAPH_EVENTS_PATH must not point at the same file/,
+  );
+});
+
+test("the same-file check resolves paths first — a relative path and its equivalent absolute form still collide", () => {
+  const cwdRelative = "state.json";
+  const absolute = resolve(cwdRelative);
+  assert.throws(
+    () => loadConfigFromEnv(baseEnv({ MINT_REVOCATION_STORE_PATH: cwdRelative, MINT_GRAPH_EVENTS_PATH: absolute })),
+    /MINT_REVOCATION_STORE_PATH and MINT_GRAPH_EVENTS_PATH must not point at the same file/,
+  );
+});
+
+test("different paths for MINT_REVOCATION_STORE_PATH and MINT_GRAPH_EVENTS_PATH are fine", () => {
+  const config = loadConfigFromEnv(baseEnv({ MINT_REVOCATION_STORE_PATH: "/var/lib/adc-mint/revoked.json", MINT_GRAPH_EVENTS_PATH: "/var/log/adc-mint/events.ndjson" }));
+  assert.equal(config.revocationStoreFilePath, "/var/lib/adc-mint/revoked.json");
+  assert.equal(config.graphEventsFilePath, "/var/log/adc-mint/events.ndjson");
 });
 
 test("the base64 root secret key decodes to the exact expected bytes, not a truncated or re-encoded value", () => {

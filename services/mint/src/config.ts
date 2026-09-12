@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 /**
  * Env-var configuration. The root secret key is the single most
  * sensitive value this service ever touches (docs/PLAN.md 1.2: "The
@@ -30,6 +32,12 @@ export interface ServiceConfig {
    * restarts — see src/revocation-store.ts. undefined (the default)
    * keeps the store purely in-memory, exactly as it's always been. */
   readonly revocationStoreFilePath?: string;
+  /** Path to an NDJSON file every 'mint'/'revoke' Principal-Graph event is
+   * appended to (see @adc/graph's createNdjsonGraphSink and this
+   * service's own README). undefined (the default) keeps the private,
+   * process-local in-memory sink server.ts already defaults to —
+   * unobservable from outside the process, exactly as it's always been. */
+  readonly graphEventsFilePath?: string;
 }
 
 function requireEnv(env: NodeJS.ProcessEnv, name: string): string {
@@ -38,6 +46,15 @@ function requireEnv(env: NodeJS.ProcessEnv, name: string): string {
     throw new Error(`missing required environment variable: ${name}`);
   }
   return value;
+}
+
+/** An empty string is treated the same as unset — matches how an
+ * accidentally-set-but-blank env var behaves in most shells/orchestrators
+ * (e.g. `FOO=` in a .env file, or a templated deployment variable that
+ * resolved to empty). */
+function optionalEnv(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const value = env[name];
+  return value === undefined || value.length === 0 ? undefined : value;
 }
 
 function decodeRootSecretKey(b64: string): Uint8Array {
@@ -87,9 +104,28 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Service
     }
   }
 
-  const revocationStoreFilePath = env.MINT_REVOCATION_STORE_PATH === undefined || env.MINT_REVOCATION_STORE_PATH.length === 0
-    ? undefined
-    : env.MINT_REVOCATION_STORE_PATH;
+  const revocationStoreFilePath = optionalEnv(env, "MINT_REVOCATION_STORE_PATH");
+  const graphEventsFilePath = optionalEnv(env, "MINT_GRAPH_EVENTS_PATH");
+
+  // Found by adversarial review: these two files are written by
+  // completely different, incompatible strategies — the revocation store
+  // does a full atomic REPLACE of the whole file on every revoke()
+  // (revocation-store.ts), while the graph-events sink only ever APPENDS
+  // lines (ndjson.ts). Pointed at the same path, each silently corrupts
+  // the other: a revoke() replaces the file, destroying prior NDJSON
+  // history, and the next graph event then appends NDJSON after the
+  // revocation store's own JSON object, corrupting THAT — which
+  // RevocationStore's constructor (run at module-top-level in index.ts)
+  // then refuses to load on the next restart, crashing the service at
+  // startup until an operator manually fixes the file. resolve() first,
+  // not a raw string compare — two different-looking but equivalent
+  // paths (a relative one and its absolute form, say) must collide here
+  // too.
+  if (revocationStoreFilePath !== undefined && graphEventsFilePath !== undefined && resolve(revocationStoreFilePath) === resolve(graphEventsFilePath)) {
+    throw new Error(
+      `MINT_REVOCATION_STORE_PATH and MINT_GRAPH_EVENTS_PATH must not point at the same file (both resolve to '${resolve(revocationStoreFilePath)}') — they are written by incompatible strategies (replace vs. append) and would corrupt each other`,
+    );
+  }
 
   return {
     port,
@@ -98,5 +134,6 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Service
     adminApiKey,
     mintRateLimitPerMinute,
     revocationStoreFilePath,
+    graphEventsFilePath,
   };
 }
