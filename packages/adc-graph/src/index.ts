@@ -20,3 +20,5 @@ export type { GraphEvent, GraphSink } from "./event.js";
 export { buildMintEvent, buildAttenuateEvent, buildSealEvent, buildVerifyEvent, buildRevokeEvent } from "./builders.js";
 
 export { createInMemoryGraphSink } from "./sinks/memory.js";
+export { createNdjsonGraphSink } from "./sinks/ndjson.js";
+export type { NdjsonGraphSinkOptions } from "./sinks/ndjson.js";

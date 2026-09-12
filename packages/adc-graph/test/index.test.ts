@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { Writable } from "node:stream";
 import { generateKeypair, mintRoot } from "@adc/core";
 import * as adcGraph from "../src/index.js";
 
@@ -29,6 +30,7 @@ test("every exported value is actually callable/usable through the public entry 
   assert.equal(typeof adcGraph.undecodableResource, "function");
   assert.equal(typeof adcGraph.isBlockIdentity, "function");
   assert.equal(typeof adcGraph.createInMemoryGraphSink, "function");
+  assert.equal(typeof adcGraph.createNdjsonGraphSink, "function");
   assert.equal(typeof adcGraph.ADC_RESOURCE_SOURCE, "string");
   assert.equal(typeof adcGraph.ADC_BLOCK_RESOURCE_KIND, "string");
   assert.ok(adcGraph.BLOCK_IDENTITY_PATTERN instanceof RegExp);
@@ -45,4 +47,21 @@ test("end-to-end through the public entry point only: mint an event, record it i
   assert.equal(sink.events.length, 1);
   assert.equal(sink.events[0]!.action, "mint");
   assert.equal(adcGraph.isBlockIdentity(event.resource.externalId), true);
+});
+
+test("end-to-end through the public entry point only: mint an event, record it via the ndjson sink", () => {
+  const chunks: string[] = [];
+  const stream = new Writable({
+    write(chunk, _enc, callback) {
+      chunks.push(chunk.toString("utf8"));
+      callback();
+    },
+  });
+
+  const { secretKey, publicKey } = generateKeypair();
+  const sink = adcGraph.createNdjsonGraphSink({ stream });
+  sink.record(adcGraph.buildMintEvent(mintRoot(secretKey), publicKey));
+
+  const written = JSON.parse(chunks.join("").trim());
+  assert.equal(written.action, "mint");
 });

@@ -117,6 +117,42 @@ const result = verify(wire, rootPublicKey, facts);
 sink.record(buildVerifyEvent(wire, result, { actor: agentIdentity, onBehalfOf: aliceIdentity }));
 ```
 
+## `GraphSink` implementations shipped here
+
+Two, both minimal — neither talks to a real Principal-Graph instance (see
+"Why this package emits data, not writes rows" above for why no shipped
+sink here ever could):
+
+- **`createInMemoryGraphSink()`** (`sinks/memory.ts`) — the reference
+  implementation used throughout this package's own tests: `record()`
+  pushes onto a plain array, `sink.events` reads them back. Private to
+  the process; nothing durable, nothing another process can observe.
+- **`createNdjsonGraphSink({ filePath | stream, onError? })`**
+  (`sinks/ndjson.ts`) — appends each event as one newline-delimited JSON
+  line, either to a file (`filePath`, its parent directories created if
+  missing, appended to — never truncated — if it already exists) or an
+  arbitrary `NodeJS.WritableStream` (`stream`, e.g. `process.stdout` for a
+  12-factor-style "log to stdout" deployment). Provide exactly one of the
+  two. This is the standard "audit log" shape: an operator can tail it,
+  ship it into a log pipeline, or eventually point a real
+  Principal-Graph-side consumer at it. `record()` is genuinely
+  synchronous in file mode (`fs.appendFileSync` per call, so a write
+  failure throws immediately, right out of `record()` — sized for
+  low/moderate event volume, not a request-per-millisecond hot path);
+  stream mode uses the stream's own `write()`, and always attaches an
+  `'error'` listener (routed to `onError`, default: `console.error`) so a
+  broken pipe or destroyed stream can't crash the process that wired this
+  sink in — `write()` failures surface asynchronously, and an
+  `EventEmitter`'s `'error'` event with no listener at all is thrown as
+  an uncaught exception by Node's own default behavior. See
+  `services/mint`'s `MINT_GRAPH_EVENTS_PATH` for a worked example of
+  wiring this in.
+
+Neither sink makes an event's own claims any more trustworthy than the
+process/file/stream it lives in — no signing, no hash-chaining, no
+tamper-evidence. That's what the worked reference adapter below is
+actually for.
+
 ## A worked reference adapter
 
 This is what a real Principal-Graph-side sink for `@adc/graph` events looks
@@ -267,7 +303,23 @@ and content of the `GraphEvent`s this package builds:
   rejecting an empty string, a typo'd hash, and one of
   `undecodableResource()`'s own `undecodable:`-prefixed fallback
   identities.
-- `test/memory-sink.test.ts` — the reference `GraphSink` implementation.
+- `test/memory-sink.test.ts` — the in-memory reference `GraphSink`.
+- `test/ndjson-sink.test.ts` — the NDJSON `GraphSink`: file mode (each
+  `record()` appends one line in order, creates the file if missing —
+  including any missing parent directories — appends to — never
+  truncates — a pre-existing one, including one with unrelated content
+  already in it; a fresh sink instance pointed at the same file after a
+  simulated restart preserves prior history); stream mode against a real
+  (non-file) `Writable`, including an `'error'` event on that stream
+  being routed to `onError` (a custom one, and the default) rather than
+  crashing the process — a regression test for an adversarial-review
+  finding: `Writable.write()`'s failures surface asynchronously, and an
+  `EventEmitter`'s `'error'` event with no listener attached throws as an
+  uncaught exception by Node's own default; `occurredAt` serializing as
+  an ISO-8601 string and every `null`-valued field serializing as a
+  literal `null` rather than being dropped; rejecting neither-or-both of
+  `filePath`/`stream`; two sinks against different files not
+  cross-contaminating.
 - `test/index.test.ts` — every export reachable through the package's real
   public entry point (`src/index.ts`) is exercised at runtime, not just
   type-checked — closing a real gap `tsc` alone doesn't catch (a value

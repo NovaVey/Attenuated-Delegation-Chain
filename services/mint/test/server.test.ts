@@ -1,8 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { verify, generateKeypair, blockSignatureHash, decodeToken } from "@adc/core";
-import { createInMemoryGraphSink } from "@adc/graph";
+import { createInMemoryGraphSink, createNdjsonGraphSink } from "@adc/graph";
 import { verifySignedRevocationList } from "@adc/revocation";
 import { createMintServer, type CreateMintServerOptions } from "../src/server.js";
 import { FakeRbaClient } from "../src/rba/fake.js";
@@ -641,4 +644,48 @@ test("createMintServer() throws immediately for a wrong-length rootSecretKey, ra
     rba: new FakeRbaClient(),
     adminApiKey: ADMIN_API_KEY,
   }));
+});
+
+// --- @adc/graph's real createNdjsonGraphSink, wired end-to-end -----------
+
+test("a real createNdjsonGraphSink, wired in via graphSink, durably records real mint and revoke events to disk", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "adc-mint-ndjson-test-"));
+  try {
+    const filePath = join(dir, "events.ndjson");
+    const { secretKey } = generateKeypair();
+    const graphSink = createNdjsonGraphSink({ filePath });
+
+    await withServer(
+      new FakeRbaClient(),
+      secretKey,
+      async (baseUrl) => {
+        const mintRes = await fetch(`${baseUrl}/mint`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ subject: ALICE, caveats: [] }),
+        });
+        assert.equal(mintRes.status, 201);
+        const { token } = (await mintRes.json()) as { token: string };
+        const hash = blockSignatureHash(decodeToken(token).sigs[0]!);
+
+        const revokeRes = await fetch(`${baseUrl}/revoke`, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${ADMIN_API_KEY}` },
+          body: JSON.stringify({ hash }),
+        });
+        assert.equal(revokeRes.status, 200);
+      },
+      { graphSink },
+    );
+
+    const lines = readFileSync(filePath, "utf8")
+      .split("\n")
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l) as { action: string });
+    assert.equal(lines.length, 2);
+    assert.equal(lines[0]!.action, "mint");
+    assert.equal(lines[1]!.action, "revoke");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

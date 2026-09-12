@@ -167,10 +167,30 @@ verify-deny, seal, revoke. This service can only ever produce two of those
 six — `'mint'` (on a successful `POST /mint`) and `'revoke'` (on a
 successful `POST /revoke`) — using `@adc/graph`'s existing `buildMintEvent()`/
 `buildRevokeEvent()` builders as-is, recorded into an injectable `GraphSink`
-(`createMintServer({ graphSink, ... })`; defaults to a fresh, private
-in-memory sink via `@adc/graph`'s own `createInMemoryGraphSink()` when not
-supplied — see `@adc/graph`'s README for what a real Principal-Graph-side
-sink looks like).
+(`createMintServer({ graphSink, ... })`).
+
+Two `GraphSink` implementations are actually usable here, both from
+`@adc/graph`:
+
+- **`createInMemoryGraphSink()`** — the default when `graphSink` isn't
+  supplied and `MINT_GRAPH_EVENTS_PATH` isn't set. Private and
+  process-local: events accumulate in memory and nothing outside the
+  process can ever observe them. Fine for tests; not useful in a real
+  deployment.
+- **`createNdjsonGraphSink({ filePath })`** — wired in automatically when
+  `MINT_GRAPH_EVENTS_PATH` is set (see Configuration): appends each event
+  as one JSON line to that file, a standard audit-log shape an operator
+  can tail, ship to a log pipeline, or eventually feed into a real
+  Principal-Graph-side consumer. See `@adc/graph`'s README for the full
+  writeup (including its `stream` mode, for logging to stdout instead of
+  a file — not wired into this service's own config, but available to
+  anyone constructing `createMintServer()` directly).
+
+A real Principal-Graph-side sink (one that actually calls
+`ensurePrincipal()`/`ensureResource()` against that project's own
+database) is a bigger lift than either of the above — see `@adc/graph`'s
+README for what one looks like — and isn't wired into this service by
+default; inject it via the same `graphSink` option.
 
 - **`'mint'`** — principal is derived automatically from the root public
   key (`rootKeyPrincipal()`); the event references the exact block-0
@@ -213,6 +233,7 @@ sink looks like).
 | `RBA_TIMEOUT_MS` | no (default `5000`) | Per-RBA-call timeout, covering the entire request including response body — not just until headers arrive. RBA is a synchronous dependency on the mint path; a hung call must not hang minting indefinitely. |
 | `MINT_RATE_LIMIT_PER_MINUTE` | no (default `60`) | Service-wide `POST /mint` rate limit (a token bucket — see `src/rate-limiter.ts`), independent of and in addition to RBA's own per-API-key limits. Checked before body parsing or any RBA call. |
 | `MINT_REVOCATION_STORE_PATH` | no (default unset — in-memory only) | Path to a JSON file the revocation store loads from at startup and writes through to on every successful revoke, so revocations survive a restart. See `src/revocation-store.ts` and Known limitations. |
+| `MINT_GRAPH_EVENTS_PATH` | no (default unset — private in-memory sink) | Path to an NDJSON file every `'mint'`/`'revoke'` Principal-Graph event is appended to (`@adc/graph`'s `createNdjsonGraphSink`). See "Principal-Graph events" above. **Must not be the same path as `MINT_REVOCATION_STORE_PATH`** — `loadConfigFromEnv()` rejects that combination at startup (see Known limitations): the two files are written by incompatible strategies (replace vs. append) and would corrupt each other. |
 
 ## Running
 
@@ -286,8 +307,35 @@ Postgres, no live network dependency for `npm test`:
   correctly, and a disk-write failure leaving the in-memory state
   untouched rather than accepting the revoke only in memory.
 - `test/config.test.ts` — env parsing and validation, including
-  `MINT_ADMIN_API_KEY`, `MINT_RATE_LIMIT_PER_MINUTE`, and
-  `MINT_REVOCATION_STORE_PATH`.
+  `MINT_ADMIN_API_KEY`, `MINT_RATE_LIMIT_PER_MINUTE`,
+  `MINT_REVOCATION_STORE_PATH`, `MINT_GRAPH_EVENTS_PATH`, and the
+  same-file collision check between the latter two (including that it
+  resolves paths first — a relative path and its absolute equivalent
+  still collide).
+- `test/graph-sink.test.ts` — `buildGraphSinkFromConfig()`, the exact
+  function `index.ts` calls to turn `MINT_GRAPH_EVENTS_PATH` into a real
+  `GraphSink`: `undefined` in, `undefined` out; a real path in, a real,
+  working sink out that durably writes to that exact path. Split out so
+  this one piece of `index.ts`'s own wiring has direct test coverage —
+  `index.ts` itself can't be imported in a test without triggering its
+  real `loadConfigFromEnv()` side effect (found as a real coverage gap by
+  adversarial review: a future typo here — building the sink but
+  forgetting to pass it through, say — could leave
+  `MINT_GRAPH_EVENTS_PATH` silently inert in production while every other
+  test kept passing).
+
+`test/server.test.ts` also has one integration test using `@adc/graph`'s
+*real* `createNdjsonGraphSink` (not a stub) wired straight into a real
+`createMintServer()` instance — a real mint and a real revoke through the
+live HTTP server, then reading the actual NDJSON file back off disk to
+confirm both events landed there correctly and in order. `@adc/graph`'s
+own `test/ndjson-sink.test.ts` covers the sink's own behavior in
+isolation (file vs. stream mode — including an `'error'` event on the
+stream being safely routed to `onError` rather than crashing the process,
+and missing parent directories being created automatically rather than
+silently losing every event — both found by adversarial review,
+append-not-truncate across a simulated restart, `Date`/`null`-field
+serialization, input validation).
 
 ## Known limitations
 
@@ -318,16 +366,18 @@ Postgres, no live network dependency for `npm test`:
   no way to represent an attempt that never produced a token. Successful
   mints and successful revokes DO now emit real events (also see
   "Principal-Graph events" above) — this is what remains unrepresented.
-- **The default `GraphSink` is a private, process-local, in-memory one.**
-  With no `graphSink` injected, `createMintServer()` uses `@adc/graph`'s
-  own `createInMemoryGraphSink()` — events accumulate in memory and are
-  never actually consumed by anything. There is, as of this writing, no
-  real HTTP-forwarding `GraphSink` implementation anywhere in this
-  codebase to default to instead: Principal-Graph itself has no write API
-  (see `@adc/graph`'s own README), so the real integration point is
-  always a deployment-specific sink injected via `createMintServer({
-  graphSink, ... })`, not something this service can sensibly default to
-  on its own.
+- **With no `graphSink` injected and `MINT_GRAPH_EVENTS_PATH` unset, the
+  default is still a private, process-local, in-memory sink.**
+  `createMintServer()` falls back to `@adc/graph`'s own
+  `createInMemoryGraphSink()` — events accumulate in memory and are never
+  actually consumed by anything. Setting `MINT_GRAPH_EVENTS_PATH` (see
+  Configuration) closes most of this gap — events land in a real,
+  durable, tail-able NDJSON file — but there's still no real
+  HTTP-forwarding `GraphSink`, and can't sensibly be one this service
+  defaults to on its own: Principal-Graph itself has no write API (see
+  `@adc/graph`'s own README), so an actual Principal-Graph-side
+  integration is always a deployment-specific sink someone builds and
+  injects via `createMintServer({ graphSink, ... })`.
 - **Revoked hashes are in-memory only unless `MINT_REVOCATION_STORE_PATH`
   is set.** With it unset (the default), `src/revocation-store.ts` is a
   plain `Set`; restarting this process un-revokes everything it held. With
@@ -337,6 +387,17 @@ Postgres, no live network dependency for `npm test`:
   cross-process locking, so it's sized for this service's actual
   deployment shape (one process holding the one root key), not multiple
   instances sharing one file.
+- **`MINT_REVOCATION_STORE_PATH` and `MINT_GRAPH_EVENTS_PATH` must be
+  different files.** `loadConfigFromEnv()` throws at startup if they
+  resolve to the same path — found by adversarial review: the revocation
+  store does a full atomic *replace* of its file on every `revoke()`
+  while the graph-events sink only ever *appends*, so the same path would
+  have each silently corrupt the other (a revoke wiping out prior NDJSON
+  history, then the next graph event appending NDJSON after the
+  revocation store's own JSON object, which that store's own constructor
+  then refuses to load on the next restart). This is the one
+  misconfiguration checked for; nothing stops either path from colliding
+  with some unrelated file the operator cares about.
 - **Revocation reuses the root key — no separate revocation-authority
   key.** `POST /revoke`/`GET /revocations` sign with the same
   `MINT_ROOT_SECRET_KEY_B64` that mints tokens. Verifiers already trust
