@@ -7,25 +7,24 @@ on:
     branches: [main]
 
 jobs:
-  build-typecheck-test:
-    name: build, typecheck, test (node ${{ matrix.node-version }})
+  # Delegates build/typecheck/test (npm run verify) to the org-shared
+  # reusable workflow — see NovaVey/.github's own README ("Reusable
+  # workflows called by ... Attenuated-Delegation-Chain ..."). Its own
+  # default node-versions matches what's passed explicitly below; passed
+  # anyway so the actual matrix this repo runs is visible here, not only
+  # discoverable by reading that other repo's default.
+  verify:
+    uses: NovaVey/.github/.github/workflows/node-verify.yml@main
+    with:
+      node-versions: '["24", "26"]'
+
+  # Fails the build loud, on every push/PR, if any publishable @adc/*
+  # package's package.json version is already live on npm — see
+  # scripts/check-published-versions.mjs's own doc comment for the full
+  # rationale (the exact mistake this guards against already happened
+  # once in a sibling repo) and README.md's "Versioning" section.
+  version-guard:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version: ["20.x", "22.x"]
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: npm
-
-      - run: npm ci
-
-      - run: npm run build --workspaces --if-present
-
-      - run: npm run typecheck --workspaces --if-present
-
-      - run: npm test --workspaces --if-present
+      - uses: actions/checkout@v5
+      - run: npm run check-published-versions
