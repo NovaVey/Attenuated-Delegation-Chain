@@ -8,12 +8,14 @@
     "services/*"
   ],
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=24"
   },
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "verify": "npm run typecheck && npm run build && npm test",
+    "check-published-versions": "node scripts/check-published-versions.mjs"
   },
   "license": "MIT"
 }

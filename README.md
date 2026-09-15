@@ -65,3 +65,66 @@ npm install
 npm run build --workspaces
 npm test --workspaces
 ```
+
+## Consuming this repo
+
+None of the `@adc/*` packages are published to npm (see "Versioning"
+below). The only supported way to depend on them today is the way
+[Control-Coverage-Range](https://github.com/NovaVey/Control-Coverage-Range)
+does: this repo as a git submodule, with the consumer's own
+`package.json` pointing `file:` dependencies straight at each package's
+directory here (e.g. `"@adc/core": "file:./stack/attenuated-delegation-chain/packages/adc-core"`).
+
+**That means build order is load-bearing, not folklore.** A `file:`
+dependency resolves to whatever's on disk at that path *right now* — for
+these packages that's `main`/`exports` pointing at `./dist/...`, which
+doesn't exist until `npm run build` has actually run. So a consumer's own
+`npm install` will fail (or silently resolve to a stale/missing `dist/`)
+unless this repo has already been built, in this exact order:
+
+1. Check out (or update) this repo — as a submodule, or otherwise.
+2. **Build it**, from this repo's own root: `npm ci && npm run build --workspaces`
+   (or `npm run build`, which fans out to every workspace already —
+   `--if-present` skips `adc-testkit`, which has no build output any
+   consumer needs).
+3. *Then* run the consumer's own `npm install` — not before.
+
+Control-Coverage-Range's own `scripts/build-stack.mjs` automates exactly
+this (`npm ci && npm run build` in this repo, before its own root
+`npm install`); if you're wiring up a new consumer, do the same rather
+than discovering the ordering by a confusing install failure.
+
+If this ever moves to option (a) — publishing `@adc/*` under a real npm
+scope — this whole section goes away and a consumer just adds a normal
+registry dependency. Until then, this is the real constraint, so it's
+documented here rather than left for the next person to work out from a
+stack trace.
+
+## Versioning
+
+None of the `@adc/*` packages here have been published to npm yet
+(`npm run check-published-versions` confirms this on every push/PR — see
+`.github/workflows/ci.yml`'s `version-guard` job).
+
+The rule this project follows, adopted from sibling repos that have
+already been bitten by the alternative (see
+[taint-tracked-tool-broker](https://github.com/NovaVey/Taint-Tracked-Tool-Broker)'s
+own CHANGELOG for the incident that established it): **no workspace
+package's `version` may ever match an already-published npm version
+containing different code.** A git checkout of `main` and a real,
+already-published tarball silently claiming the identical version string
+while containing different code is exactly the kind of type-drift trap
+that's invisible until a downstream consumer — one building `dist/`
+directly from a git submodule checkout of `main`, say, per "Consuming
+this repo" above — hits it as a confusing bug with no clear cause.
+
+So: once any `@adc/*` package here is ever actually published, `main`
+must always sit on an unpublished version from that point forward —
+ordinarily a `-dev.N` prerelease strictly above the last real release
+(e.g. `0.2.0-dev.0` immediately after publishing `0.1.0`) — bumped to a
+real release number only at the moment of publishing, and back up to the
+next prerelease immediately after. `scripts/check-published-versions.mjs`
+enforces this in CI for every non-`private` workspace package
+(`@adc/core`, `@adc/graph`, `@adc/revocation`, `@adc/broker` as of this
+writing — `@adc/testkit` and `@adc/mint-service` are `private: true` and
+never published, so there's nothing for their version to collide with).
