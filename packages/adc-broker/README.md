@@ -9,8 +9,20 @@ destination host, the live taint level, the current time."
 
 TTTB is a real, published library (`taint-tracked-tool-broker` on npm,
 `^1.4.0` here — see [its README](https://github.com/NovaVey/Taint-Tracked-Tool-Broker#readme)),
-not a service, so this package depends on it directly rather than hand-rolling
-a client against a wire contract, unlike `services/mint`'s RBA integration.
+not a service, so this package imports it directly (types, `sinkClassOf`,
+`findOutboundHosts`) rather than hand-rolling a client against a wire
+contract, unlike `services/mint`'s RBA integration. It's declared as a
+`peerDependency`, not a plain `dependency`: whatever real app assembles
+this package (Control-Coverage-Range's own range, or any other consumer)
+almost always also builds or installs its own copy of TTTB directly —
+declaring TTTB as an ordinary dependency here would let npm resolve a
+*second*, independent copy just for this package, silently able to drift
+from the one the rest of the assembled app actually runs against. A
+peer dependency instead requires the consuming app to supply exactly one
+copy, which this package and everything else in that app then share. It
+stays in `devDependencies` too, purely so this package's own build/test
+have something to compile and run against in isolation — that copy is
+never what a real consumer's `npm install` resolves against.
 
 ## Why the adapter wraps the call site, not the tool
 
